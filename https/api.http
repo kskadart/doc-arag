@@ -1,0 +1,97 @@
+### Health Check
+GET {{baseUrl}}/health
+Accept: application/json
+
+###
+
+### Upload Document (PDF or DOCX)
+# Note: Replace the file path with your actual PDF/DOCX file
+POST {{baseUrl}}/uploads
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="file"; filename="document.pdf"
+Content-Type: application/pdf
+
+< ./path/to/your/document.pdf
+------WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+###
+
+### Scrape Web Page
+POST {{baseUrl}}/scrappings
+Content-Type: application/json
+
+{
+  "url": "https://en.wikipedia.org/wiki/Artificial_intelligence",
+  "extract_links": false
+}
+
+###
+
+### Generate Embeddings for Existing File
+# Replace {{file_id}} with actual file ID from upload/scrape response
+POST {{baseUrl}}/embeddings/{{file_id}}
+
+###
+
+### Query Documents (Basic)
+POST {{baseUrl}}/query
+Content-Type: application/json
+
+{
+  "query": "What is artificial intelligence?",
+  "max_iterations": 2
+}
+
+###
+
+### Query with File Filter
+POST {{baseUrl}}/query
+Content-Type: application/json
+
+{
+  "query": "Explain the main concepts",
+  "file_id": "your-file-id-here",
+  "max_iterations": 2
+}
+
+###
+
+### Query with Source Type Filter
+POST {{baseUrl}}/query
+Content-Type: application/json
+
+{
+  "query": "Summarize the key points",
+  "source_type": "pdf",
+  "max_iterations": 3
+}
+
+###
+
+### List All Documents (Page 1)
+GET {{baseUrl}}/documents?page=1&page_size=10
+Accept: application/json
+
+###
+
+### List All Documents (Page 2)
+GET {{baseUrl}}/documents?page=2&page_size=10
+Accept: application/json
+
+###
+
+### Get Task Status
+# Replace {{task_id}} with actual task ID from upload/scrape response
+GET {{baseUrl}}/tasks/{{task_id}}
+Accept: application/json
+
+###
+
+### Delete Document
+# Replace {{file_id}} with actual file ID
+DELETE {{baseUrl}}/documents/{{file_id}}
+Accept: application/json
+
+###

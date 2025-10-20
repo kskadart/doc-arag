@@ -1,0 +1,92 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: doc-arag
+    ports:
+      - "8103:8103"
+    volumes:
+      - ./src/docarag:/app/src/docarag
+    restart: unless-stopped
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-anthropic_api_key}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-3-haiku-20240307}
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_BUCKET=documents
+      - WEAVIATE_URL=http://weaviate:8080
+      - EMBEDDING_SERVICE_URL=embedding-service:8351
+      - RERANKER_MODEL_NAME=cross-encoder/ms-marco-MiniLM-L-6-v2
+    healthcheck:
+      test: [
+        "CMD", "python", "-c", "import urllib.request; \
+        urllib.request.urlopen('http://localhost:8103/health').read()"
+      ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+      
+      start_period: 40s
+    depends_on:
+      minio:
+        condition: service_healthy
+      weaviate:
+        condition: service_healthy
+    networks:
+      - arag-network
+
+  minio:
+    image: minio/minio:latest
+    container_name: doc-arag-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - arag-network
+
+  weaviate:
+    image: semitechnologies/weaviate:latest
+    container_name: doc-arag-weaviate
+    ports:
+      - "8080:8080"
+    volumes:
+      - weaviate-data:/var/lib/weaviate
+    environment:
+      - AUTOSCHEMA_ENABLED=false
+      - QUERY_DEFAULTS_LIMIT=25
+      - AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true
+      - PERSISTENCE_DATA_PATH=/var/lib/weaviate
+      - DEFAULT_VECTORIZER_MODULE=none
+      - CLUSTER_HOSTNAME=node1
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/v1/.well-known/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - arag-network
+
+networks:
+  arag-network:
+    external: false
+    name: arag-common-network
+
+volumes:
+  minio-data:
+  weaviate-data:

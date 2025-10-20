@@ -1,0 +1,58 @@
+syntax = "proto3";
+
+package embedding;
+
+// Request for embedding a single text
+message EmbedTextRequest {
+  string text = 1;
+  int32 max_length = 2;
+  bool normalize = 3;
+  string pooling_strategy = 4; // e.g., "mean", "cls"
+}
+
+// Response for single text embedding
+message EmbedTextResponse {
+  repeated float embedding = 1;
+}
+
+// Request for embedding multiple texts
+message EmbedBatchRequest {
+  repeated string texts = 1;
+  int32 batch_size = 2;
+  int32 max_length = 3;
+  bool normalize = 4;
+  string pooling_strategy = 5;
+}
+
+// Embedding vector wrapper
+message EmbeddingVector {
+  repeated float vector = 1;
+}
+
+// Response for batch embeddings
+message EmbedBatchResponse {
+  repeated EmbeddingVector embeddings = 1;
+}
+
+// Empty request
+message Empty {}
+
+// Embedding dimension response
+message DimensionResponse {
+  int32 dimension = 1;
+}
+
+// Health response
+message HealthResponse {
+  string status = 1;      // e.g., "SERVING"
+  string model_name = 2;  // underlying model identifier
+  string device = 3;      // cpu / cuda
+}
+
+// Embedding gRPC service definition
+service EmbeddingService {
+  rpc EmbedText(EmbedTextRequest) returns (EmbedTextResponse);
+  rpc EmbedBatch(EmbedBatchRequest) returns (EmbedBatchResponse);
+  rpc GetEmbeddingDimension(Empty) returns (DimensionResponse);
+  rpc HealthCheck(Empty) returns (HealthResponse);
+}
