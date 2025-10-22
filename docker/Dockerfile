@@ -10,6 +10,11 @@ FROM python:3.13-slim-trixie
 
 WORKDIR /app
 
+# Install libmagic for python-magic
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libmagic1 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/src/docarag ./src/docarag
 
