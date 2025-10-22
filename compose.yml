@@ -16,7 +16,8 @@ services:
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
       - MINIO_BUCKET=documents
-      - WEAVIATE_URL=http://weaviate:8080
+      - WEAVIATE_HOST=weaviate
+      - WEAVIATE_PORT=8080
       - EMBEDDING_SERVICE_URL=embedding-service:8351
       - RERANKER_MODEL_NAME=cross-encoder/ms-marco-MiniLM-L-6-v2
     healthcheck:

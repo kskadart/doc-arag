@@ -13,7 +13,9 @@ _version_not_supported = False
 try:
     from grpc._utilities import first_version_is_lower
 
-    _version_not_supported = first_version_is_lower(GRPC_VERSION, GRPC_GENERATED_VERSION)
+    _version_not_supported = first_version_is_lower(
+        GRPC_VERSION, GRPC_GENERATED_VERSION
+    )
 except ImportError:
     _version_not_supported = True
 
@@ -113,9 +115,13 @@ def add_EmbeddingServiceServicer_to_server(servicer, server):
             response_serializer=src_dot_embedding__pb2.HealthResponse.SerializeToString,
         ),
     }
-    generic_handler = grpc.method_handlers_generic_handler("embedding.EmbeddingService", rpc_method_handlers)
+    generic_handler = grpc.method_handlers_generic_handler(
+        "embedding.EmbeddingService", rpc_method_handlers
+    )
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers("embedding.EmbeddingService", rpc_method_handlers)
+    server.add_registered_method_handlers(
+        "embedding.EmbeddingService", rpc_method_handlers
+    )
 
 
 # This class is part of an EXPERIMENTAL API.

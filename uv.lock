@@ -440,6 +440,7 @@ dependencies = [
     { name = "pypdf2" },
     { name = "python-docx" },
     { name = "python-multipart" },
+    { name = "tenacity" },
     { name = "weaviate-client" },
 ]
 
@@ -447,6 +448,7 @@ dependencies = [
 dev = [
     { name = "black" },
     { name = "mypy" },
+    { name = "pysentry-rs" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -468,6 +470,7 @@ requires-dist = [
     { name = "pypdf2", specifier = ">=3.0.0" },
     { name = "python-docx", specifier = ">=1.1.0" },
     { name = "python-multipart", specifier = ">=0.0.20" },
+    { name = "tenacity", specifier = ">=9.1.2" },
     { name = "weaviate-client", specifier = ">=4.9.0" },
 ]
 
@@ -475,6 +478,7 @@ requires-dist = [
 dev = [
     { name = "black", specifier = ">=25.9.0" },
     { name = "mypy", specifier = ">=1.18.2" },
+    { name = "pysentry-rs", specifier = ">=0.3.12" },
     { name = "pytest", specifier = ">=8.4.2" },
     { name = "ruff", specifier = ">=0.14.0" },
 ]
@@ -1616,6 +1620,24 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/9f/bb/18dc3062d37db6c491392007dfd1a7f524bb95886eb956569ac38a23a784/PyPDF2-3.0.1.tar.gz", hash = "sha256:a74408f69ba6271f71b9352ef4ed03dc53a31aa404d29b5d31f53bfecfee1440", size = 227419 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8e/5e/c86a5643653825d3c913719e788e41386bee415c2b87b4f955432f2de6b2/pypdf2-3.0.1-py3-none-any.whl", hash = "sha256:d16e4205cfee272fbdc0568b68d82be796540b1537508cef59388f839c191928", size = 232572 },
+]
+
+[[package]]
+name = "pysentry-rs"
+version = "0.3.12"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/56/2d/b86ee452184120deea729d145a30dcafe768bd1e37d245bc875387a85346/pysentry_rs-0.3.12.tar.gz", hash = "sha256:482772da1f0c96be32896137564a1072f4a794a0bf34acc2822e3bdbfd057c53", size = 354847 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c0/89/cf51ba9543468e9f2d684ccf38f6e83f0eb0808e093865c0ed5b1891854f/pysentry_rs-0.3.12-cp313-cp313-macosx_10_12_x86_64.whl", hash = "sha256:c0a58d6958181644f581e17096d8bb9ac9eeba7926d317ba81c9931023dbd7ce", size = 4392899 },
+    { url = "https://files.pythonhosted.org/packages/db/a9/7f3ec235942dade8b0fdbe727a79559ce29b858ee311dee2f176b60a36de/pysentry_rs-0.3.12-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:6b9c867eaf34766715b42ef3868b588f4ace58967ee0b538e86096967e0e63b0", size = 4159243 },
+    { url = "https://files.pythonhosted.org/packages/d0/95/4adf1867183721f0fd65e7b71770bbb27f89d3579713984d81b06f351066/pysentry_rs-0.3.12-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:3004a6577ecfff97e4c1eb4d7174d84f37b6b875e176859b6ea510a4779a08f9", size = 4663938 },
+    { url = "https://files.pythonhosted.org/packages/5e/51/4c8954fc2993ac0d6593f1ed7759a77924a7bc9d8c5688113bfe11980333/pysentry_rs-0.3.12-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:4d29e7703307b4bfb9dfe138696788c66b20c5afcda258953b05300fbf2fca08", size = 4609246 },
+    { url = "https://files.pythonhosted.org/packages/8a/8f/8cbab025b89bebe90832a06ed6ade57d6ef513d02f210fcd5d3f80e31368/pysentry_rs-0.3.12-cp313-cp313-win_amd64.whl", hash = "sha256:acc4d39e2e9b9c399c72afcb4ff21ce64577123998e94f13c30544b7bd42f0d8", size = 3895896 },
+    { url = "https://files.pythonhosted.org/packages/95/5f/d66a68e79c86a1053cf9354917ad3dabb530358cd81e9c1c9c862c756d3d/pysentry_rs-0.3.12-cp314-cp314-macosx_10_12_x86_64.whl", hash = "sha256:a92e78d3a16839a04e2c6560bbfd64c0bd447ddfbd7c490bfabfcb3ed93ac8d8", size = 4394697 },
+    { url = "https://files.pythonhosted.org/packages/ea/a2/198fd64c4fc56456098cd84cf26dec18f283d8b2f73cc7614e3ab37315ef/pysentry_rs-0.3.12-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:cd1a1965864f51c5f1432f6c79eebf5dfdd7e158c0901106059d5ec01eff1fed", size = 4157482 },
+    { url = "https://files.pythonhosted.org/packages/aa/5f/1a9f3d99fa6219164e873e75fb82bbbece9c3b1058264bcc96408a2612f1/pysentry_rs-0.3.12-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8df6abfcaaeb0400299fd9b36475ac30a1dd4ad3b0b20a94f46f8c2206f7c15a", size = 4660283 },
+    { url = "https://files.pythonhosted.org/packages/62/51/cf3e3fd4b9fc67ccf8f8f5dc77cc91a84ad3889fc8cb6d2e795f51fdcd50/pysentry_rs-0.3.12-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:c9d1aae7e3c01ab9e3e6c374bcd09c0f9fec43ece19c40a526e9bf92b7abf2c2", size = 4608434 },
+    { url = "https://files.pythonhosted.org/packages/94/fb/a554ab4e977542e2a73d275a43b5359a8e79dd9433448c1c77b981e8124c/pysentry_rs-0.3.12-cp314-cp314-win_amd64.whl", hash = "sha256:38158be58182549d9b6775d7e92a195a51cc319696c78f194b717687cb795e88", size = 3898054 },
 ]
 
 [[package]]

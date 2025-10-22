@@ -21,12 +21,14 @@ dependencies = [
     "python-multipart>=0.0.20",
     "grpcio>=1.60.0",
     "langchain-text-splitters>=0.3.11",
+    "tenacity>=9.1.2",
 ]
 
 [dependency-groups]
 dev = [
     "black>=25.9.0",
     "mypy>=1.18.2",
+    "pysentry-rs>=0.3.12",
     "pytest>=8.4.2",
     "ruff>=0.14.0",
 ]

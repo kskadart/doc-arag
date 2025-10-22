@@ -42,12 +42,12 @@ def test_query_with_valid_request(client):
             "sources": [],
             "confidence": 0.8,
             "iterations": 1,
-            "rephrased_query": "test query"
+            "rephrased_query": "test query",
         }
         mock_agent.return_value.ainvoke.return_value = mock_result
-        
+
         response = client.post("/query", json={"query": "test question"})
-        
+
         # Should process without error given the mock
         assert response.status_code in [200, 500]  # May fail on initialization
 
@@ -64,7 +64,6 @@ def test_delete_document_not_found(client):
         with patch("src.docarag.api.get_storage_service") as mock_storage:
             mock_vs.return_value.delete_by_file_id.return_value = 0
             mock_storage.return_value.delete_by_prefix.return_value = 0
-            
+
             response = client.delete("/documents/nonexistent-id")
             assert response.status_code == 404
-
