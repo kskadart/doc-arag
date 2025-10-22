@@ -89,3 +89,24 @@ class DeleteResponse(BaseModel):
     file_id: str = Field(..., description="Deleted file identifier")
     status: str = Field(..., description="Deletion status")
     message: str = Field(..., description="Status message")
+
+
+class UploadedFileResponse(BaseModel):
+    """Response for single uploaded file information."""
+
+    file_id: str = Field(..., description="File identifier")
+    object_key: str = Field(..., description="MinIO object key")
+    filename: str = Field(..., description="Original filename")
+    size_bytes: int = Field(..., description="File size in bytes")
+    content_type: str = Field(..., description="MIME content type")
+    last_modified: datetime = Field(..., description="Last modified timestamp")
+    metadata: dict = Field(default_factory=dict, description="File metadata")
+
+
+class UploadedFilesListResponse(BaseModel):
+    """Response for listing uploaded files."""
+
+    files: List[UploadedFileResponse] = Field(default_factory=list)
+    total: int = Field(..., description="Total number of files")
+    page: int = Field(..., description="Current page number")
+    page_size: int = Field(..., description="Number of items per page")

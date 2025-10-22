@@ -1,6 +1,6 @@
 from typing import List, Dict, Any
 import io
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 from docx import Document
 from src.docarag.settings import settings
 

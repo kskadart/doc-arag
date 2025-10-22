@@ -1,0 +1,64 @@
+name: Run Tests
+
+on:
+  pull_request:
+    branches:
+      - main
+      - dev/**
+  push:
+    branches:
+      - main
+      - dev/**
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        python-version: ["3.13"]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        enable-cache: true
+    
+    - name: Install dependencies
+      run: |
+        uv sync --all-groups
+    
+    - name: Run pytest
+      run: |
+        uv run pytest tests/ -v --tb=short
+      env:
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || 'test-api-key-123' }}
+        ANTHROPIC_MODEL: claude-3-5-sonnet-20241022
+        MINIO_ENDPOINT: localhost:9000
+        MINIO_ACCESS_KEY: test-access-key
+        MINIO_SECRET_KEY: test-secret-key
+        MINIO_BUCKET: test-bucket
+        MINIO_SECURE: false
+        WEAVIATE_HOST: localhost
+        WEAVIATE_PORT: "8080"
+        WEAVIATE_COLLECTION: TestDocuments
+        EMBEDDING_SERVICE_URL: localhost:8351
+    
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: pytest-results-${{ matrix.python-version }}
+        path: |
+          .pytest_cache/
+          test-results/
+        retention-days: 30
+
