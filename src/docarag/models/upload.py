@@ -8,9 +8,7 @@ class UploadModel(BaseModel):
 
     document_name: str = Field(..., max_length=255, description="Name of the document")
     document: Optional[UploadFile] = Field(None, description="File upload")
-    document_url: Optional[str] = Field(
-        None, description="URL to download file from"
-    )
+    document_url: Optional[str] = Field(None, description="URL to download file from")
 
     @model_validator(mode="after")
     def validate_document_source(self):

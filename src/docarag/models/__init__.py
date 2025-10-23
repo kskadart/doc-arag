@@ -17,6 +17,7 @@ from src.docarag.models.responses import (
     Source,
     UploadedFileResponse,
     UploadedFilesListResponse,
+    TaskStatusResponse,
 )
 
 __all__ = [
@@ -34,4 +35,5 @@ __all__ = [
     "Source",
     "UploadedFileResponse",
     "UploadedFilesListResponse",
+    "TaskStatusResponse",
 ]

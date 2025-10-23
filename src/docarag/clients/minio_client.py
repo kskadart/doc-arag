@@ -139,14 +139,20 @@ def list_all_files(client: Minio, bucket: str) -> list[Dict]:
     try:
         files = []
         objects = client.list_objects(bucket, recursive=True)
-        
+
         for obj in objects:
             try:
                 stat = client.stat_object(bucket, obj.object_name)
-                
-                file_id = obj.object_name.split("/")[0] if "/" in obj.object_name else None
-                filename = obj.object_name.split("/")[-1] if "/" in obj.object_name else obj.object_name
-                
+
+                file_id = (
+                    obj.object_name.split("/")[0] if "/" in obj.object_name else None
+                )
+                filename = (
+                    obj.object_name.split("/")[-1]
+                    if "/" in obj.object_name
+                    else obj.object_name
+                )
+
                 file_info = {
                     "file_id": file_id,
                     "object_key": obj.object_name,
@@ -156,13 +162,13 @@ def list_all_files(client: Minio, bucket: str) -> list[Dict]:
                     "last_modified": obj.last_modified,
                     "metadata": stat.metadata or {},
                 }
-                
+
                 files.append(file_info)
             except S3Error:
                 continue
-                
+
         return files
-        
+
     except S3Error as e:
         raise Exception(f"Failed to list files from MinIO: {str(e)}")
     except Exception as e:
@@ -186,7 +192,7 @@ def delete_file_by_id(client: Minio, bucket: str, file_id: str) -> int:
     """
     try:
         objects = client.list_objects(bucket, prefix=f"{file_id}/", recursive=True)
-        
+
         deleted_count = 0
         for obj in objects:
             try:
@@ -194,10 +200,64 @@ def delete_file_by_id(client: Minio, bucket: str, file_id: str) -> int:
                 deleted_count += 1
             except S3Error:
                 continue
-        
+
         return deleted_count
-        
+
     except S3Error as e:
         raise Exception(f"Failed to delete files from MinIO: {str(e)}")
     except Exception as e:
         raise Exception(f"Failed to delete files from MinIO: {str(e)}")
+
+
+def download_file_by_id(
+    client: Minio, bucket: str, document_id: str
+) -> tuple[bytes, str, dict]:
+    """
+    Download a document by document_id from MinIO.
+
+    Args:
+        client: Minio client
+        bucket: Bucket name
+        document_id: Document identifier
+
+    Returns:
+        Tuple of (file_content: bytes, filename: str, metadata: dict)
+        where metadata includes content_type and other file metadata
+
+    Raises:
+        Exception: If document not found or download fails
+    """
+    try:
+        objects = list(
+            client.list_objects(bucket, prefix=f"{document_id}/", recursive=True)
+        )
+
+        if not objects:
+            raise Exception(f"No document found with ID: {document_id}")
+
+        obj = objects[0]
+        stat = client.stat_object(bucket, obj.object_name)
+        response = client.get_object(bucket, obj.object_name)
+        file_content = response.read()
+        response.close()
+
+        filename = (
+            obj.object_name.split("/", 1)[1]
+            if "/" in obj.object_name
+            else obj.object_name
+        )
+
+        metadata = {
+            "content_type": stat.content_type,
+            "filename": filename,
+            "size_bytes": obj.size,
+            "last_modified": obj.last_modified,
+            "metadata": stat.metadata or {},
+        }
+
+        return file_content, filename, metadata
+
+    except S3Error as e:
+        raise Exception(f"Failed to download file from MinIO: {str(e)}")
+    except Exception as e:
+        raise Exception(f"Failed to download file from MinIO: {str(e)}")

@@ -111,12 +111,23 @@ class EmbeddingGRPCClient:
             logger.error(f"Failed to generate embedding: {str(e)}")
             raise Exception(f"Failed to generate embedding: {str(e)}")
 
-    async def embed_batch_async(self, texts: List[str]) -> List[List[float]]:
+    async def embed_batch_async(
+        self,
+        texts: List[str],
+        batch_size: int = 32,
+        max_length: Optional[int] = None,
+        normalize: Optional[bool] = None,
+        pooling_strategy: Optional[str] = None,
+    ) -> List[List[float]]:
         """
         Generate embeddings for multiple texts using async gRPC call.
 
         Args:
             texts: List of texts to embed
+            batch_size: Batch size for server-side processing (default: 32)
+            max_length: Maximum token length per text (default: from settings)
+            normalize: Whether to normalize embeddings (default: from settings)
+            pooling_strategy: Pooling strategy like "mean", "cls" (default: from settings)
 
         Returns:
             List of embedding vectors
@@ -133,22 +144,48 @@ class EmbeddingGRPCClient:
         if not valid_texts:
             raise ValueError("No valid texts to embed")
 
+        # Use settings defaults if not provided
+        if max_length is None:
+            max_length = settings.embedding_max_length
+        if normalize is None:
+            normalize = settings.embedding_normalize
+        if pooling_strategy is None:
+            pooling_strategy = settings.embedding_pooling_strategy
+
         try:
             stub = self._get_stub()
-            request = EmbedBatchRequest(texts=valid_texts)
+            request = EmbedBatchRequest(
+                texts=valid_texts,
+                batch_size=batch_size,
+                max_length=max_length,
+                normalize=normalize,
+                pooling_strategy=pooling_strategy,
+            )
             response = await stub.EmbedBatch(request, timeout=self.timeout)
-            return [list(emb) for emb in response.embeddings]
+            # EmbeddingVector has a 'vector' field containing the actual floats
+            return [list(emb.vector) for emb in response.embeddings]
 
         except Exception as e:
             logger.error(f"Failed to generate embeddings: {str(e)}")
             raise Exception(f"Failed to generate embeddings: {str(e)}")
 
-    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+    def embed_batch(
+        self,
+        texts: List[str],
+        batch_size: int = 32,
+        max_length: Optional[int] = None,
+        normalize: Optional[bool] = None,
+        pooling_strategy: Optional[str] = None,
+    ) -> List[List[float]]:
         """
         Generate embeddings for multiple texts using sync gRPC call.
 
         Args:
             texts: List of texts to embed
+            batch_size: Batch size for server-side processing (default: 32)
+            max_length: Maximum token length per text (default: from settings)
+            normalize: Whether to normalize embeddings (default: from settings)
+            pooling_strategy: Pooling strategy like "mean", "cls" (default: from settings)
 
         Returns:
             List of embedding vectors
@@ -165,11 +202,26 @@ class EmbeddingGRPCClient:
         if not valid_texts:
             raise ValueError("No valid texts to embed")
 
+        # Use settings defaults if not provided
+        if max_length is None:
+            max_length = settings.embedding_max_length
+        if normalize is None:
+            normalize = settings.embedding_normalize
+        if pooling_strategy is None:
+            pooling_strategy = settings.embedding_pooling_strategy
+
         try:
             stub = self._get_stub()
-            request = EmbedBatchRequest(texts=valid_texts)
+            request = EmbedBatchRequest(
+                texts=valid_texts,
+                batch_size=batch_size,
+                max_length=max_length,
+                normalize=normalize,
+                pooling_strategy=pooling_strategy,
+            )
             response = stub.EmbedBatch(request, timeout=self.timeout)
-            return [list(emb) for emb in response.embeddings]
+            # EmbeddingVector has a 'vector' field containing the actual floats
+            return [list(emb.vector) for emb in response.embeddings]
 
         except Exception as e:
             logger.error(f"Failed to generate embeddings: {str(e)}")

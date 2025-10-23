@@ -32,9 +32,11 @@ async def check_vector_db_connection() -> None:
 
 
 @asynccontextmanager
-async def get_vector_db_client() -> weaviate.WeaviateAsyncClient:
+async def get_vector_db_client():
+    client: weaviate.WeaviateAsyncClient
     async with weaviate.use_async_with_local(
         host=settings.weaviate_host,
         port=settings.weaviate_port,
+        skip_init_checks=True,
     ) as client:
         yield client

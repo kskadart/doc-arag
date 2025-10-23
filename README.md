@@ -1,4 +1,4 @@
-# This is DOC-ARAG: Agentic RAG System
+# Agentic RAG Service
 
 An intelligent document processing and retrieval system using LangGraph, Weaviate, and Claude AI.
 

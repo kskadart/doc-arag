@@ -18,11 +18,11 @@ mock_rag_agent_module = Mock()
 mock_rag_agent_module.get_rag_agent = Mock()
 mock_rag_agent_module.RAGAgent = Mock()
 mock_rag_agent_module.RAGState = Mock()
-sys.modules['src.docarag.services.rag_agent'] = mock_rag_agent_module
+sys.modules["src.docarag.services.rag_agent"] = mock_rag_agent_module
 
 mock_background_tasks_module = Mock()
 mock_background_tasks_module.process_scraping_task = Mock()
 mock_background_tasks_module.process_embedding_task = Mock()
 mock_background_tasks_module.create_task_id = Mock(return_value="test-task-id")
 mock_background_tasks_module.get_task_status = Mock(return_value={"status": "pending"})
-sys.modules['src.docarag.utils.background_tasks'] = mock_background_tasks_module
+sys.modules["src.docarag.utils.background_tasks"] = mock_background_tasks_module

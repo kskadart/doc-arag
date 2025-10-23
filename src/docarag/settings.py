@@ -33,8 +33,12 @@ class Settings(BaseSettings):
     api_port: int = 8103
 
     embedding_service_url: str = "embedding-service:8351"
-    embedding_service_timeout: int = 30
+    embedding_service_timeout: int = 300  # Increased to 5 minutes for large batches
     embedding_use_async: bool = True
+    embedding_max_length: int = 512
+    embedding_pooling_strategy: str = "mean"
+    embedding_normalize: bool = True
+    embedding_batch_size: int = 32  # Process in smaller batches
 
 
 settings = Settings()
