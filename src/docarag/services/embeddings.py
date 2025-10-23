@@ -30,13 +30,23 @@ class EmbeddingService:
         """
         return self.client.embed_text(text)
 
-    def embed_batch(self, texts: List[str], batch_size: int = 8) -> List[List[float]]:
+    def embed_batch(
+        self,
+        texts: List[str],
+        batch_size: int = 32,
+        max_length: Optional[int] = None,
+        normalize: Optional[bool] = None,
+        pooling_strategy: Optional[str] = None,
+    ) -> List[List[float]]:
         """
         Generate embeddings for multiple texts.
 
         Args:
             texts: List of texts to embed
-            batch_size: Batch size for processing (ignored for gRPC service)
+            batch_size: Batch size for server-side processing (default: 32)
+            max_length: Maximum token length per text (default: from settings)
+            normalize: Whether to normalize embeddings (default: from settings)
+            pooling_strategy: Pooling strategy like "mean", "cls" (default: from settings)
 
         Returns:
             List of embedding vectors
@@ -45,7 +55,13 @@ class EmbeddingService:
             ValueError: If texts list is empty
             Exception: If embedding fails
         """
-        return self.client.embed_batch(texts)
+        return self.client.embed_batch(
+            texts,
+            batch_size=batch_size,
+            max_length=max_length,
+            normalize=normalize,
+            pooling_strategy=pooling_strategy,
+        )
 
     def get_embedding_dimension(self) -> int:
         """
@@ -73,14 +89,22 @@ class EmbeddingService:
         return await self.client.embed_text_async(text)
 
     async def embed_batch_async(
-        self, texts: List[str], batch_size: int = 8
+        self,
+        texts: List[str],
+        batch_size: int = 32,
+        max_length: Optional[int] = None,
+        normalize: Optional[bool] = None,
+        pooling_strategy: Optional[str] = None,
     ) -> List[List[float]]:
         """
         Generate embeddings for multiple texts using async call.
 
         Args:
             texts: List of texts to embed
-            batch_size: Batch size for processing (ignored for gRPC service)
+            batch_size: Batch size for server-side processing (default: 32)
+            max_length: Maximum token length per text (default: from settings)
+            normalize: Whether to normalize embeddings (default: from settings)
+            pooling_strategy: Pooling strategy like "mean", "cls" (default: from settings)
 
         Returns:
             List of embedding vectors
@@ -89,7 +113,13 @@ class EmbeddingService:
             ValueError: If texts list is empty
             Exception: If embedding fails
         """
-        return await self.client.embed_batch_async(texts)
+        return await self.client.embed_batch_async(
+            texts,
+            batch_size=batch_size,
+            max_length=max_length,
+            normalize=normalize,
+            pooling_strategy=pooling_strategy,
+        )
 
     async def get_embedding_dimension_async(self) -> int:
         """

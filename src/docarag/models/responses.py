@@ -31,11 +31,15 @@ class ScrapeResponse(BaseModel):
 class EmbeddingResponse(BaseModel):
     """Response for embedding generation."""
 
+    task_id: str = Field(..., description="Task identifier for tracking progress")
     file_id: str = Field(..., description="File identifier")
     status: str = Field(..., description="Processing status")
     message: str = Field(..., description="Status message")
     chunks_processed: Optional[int] = Field(
         default=None, description="Number of chunks embedded"
+    )
+    parsed_chunks: Optional[List[dict]] = Field(
+        default=None, description="Parsed document chunks with content and page numbers"
     )
 
 
@@ -110,3 +114,22 @@ class UploadedFilesListResponse(BaseModel):
     total: int = Field(..., description="Total number of files")
     page: int = Field(..., description="Current page number")
     page_size: int = Field(..., description="Number of items per page")
+
+
+class TaskStatusResponse(BaseModel):
+    """Response for task status."""
+
+    task_id: str = Field(..., description="Task identifier")
+    status: str = Field(..., description="Task status (processing, completed, failed)")
+    file_id: Optional[str] = Field(
+        default=None, description="Associated file identifier"
+    )
+    message: str = Field(..., description="Status message")
+    chunks_processed: int = Field(default=0, description="Number of chunks processed")
+    total_chunks: int = Field(
+        default=0, description="Total number of chunks to process"
+    )
+    created_at: datetime = Field(..., description="Task creation timestamp")
+    completed_at: Optional[datetime] = Field(
+        default=None, description="Task completion timestamp"
+    )

@@ -1,4 +1,4 @@
-from src.docarag.clients.vector_db import (
+from src.docarag.clients.vector_db_client import (
     check_vector_db_connection,
     get_vector_db_client,
 )
@@ -8,6 +8,7 @@ from src.docarag.clients.minio_client import (
     upload_file_to_minio,
     list_all_files,
     delete_file_by_id,
+    download_file_by_id,
 )
 
 
@@ -19,4 +20,5 @@ __all__ = [
     "upload_file_to_minio",
     "list_all_files",
     "delete_file_by_id",
+    "download_file_by_id",
 ]

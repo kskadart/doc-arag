@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 import logging
-import uuid
 import datetime
+import uuid
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Depends, status
 from src.docarag.models import (
     ScrapeRequest,
@@ -12,18 +12,25 @@ from src.docarag.models import (
     QueryResponse,
     DeleteResponse,
     HealthResponse,
-    Source,
     UploadedFileResponse,
     UploadedFilesListResponse,
+    TaskStatusResponse,
 )
-from src.docarag.dependencies import upload_dependencies
-from src.docarag.clients import check_vector_db_connection, get_minio_client, list_all_files, delete_file_by_id
+from src.docarag.dependencies import upload_dependencies, get_all_files
+from src.docarag.clients import (
+    check_vector_db_connection,
+    get_minio_client,
+    delete_file_by_id,
+)
 from src.docarag.settings import settings
+
 # from src.docarag.services.storage import get_storage_service
 from src.docarag.services.uploader import process_upload
 from src.docarag.services import (
     create_default_collection,
 )
+from src.docarag.tasks import run_embedding_task
+from src.docarag.task_progress import get_task
 
 
 logger = logging.getLogger(__name__)
@@ -65,33 +72,33 @@ app = FastAPI(
 )
 
 
-@app.delete("/documents/{file_id}", response_model=DeleteResponse, tags=["Documents"])
-async def delete_document(file_id: str):
+@app.delete(
+    "/documents/{document_id}", response_model=DeleteResponse, tags=["Documents"]
+)
+async def delete_document(
+    document_id: str, all_files: list[dict] = Depends(get_all_files)
+):
     """
-    Delete an uploaded file from MinIO storage by file_id.
+    Delete an uploaded file from MinIO storage by document_id.
 
-    This will remove all files associated with the given file_id.
+    This will remove all files associated with the given document_id.
     """
+    file_exists = any(f["file_id"] == document_id for f in all_files)
+    if not file_exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No file found with ID: {document_id}",
+        )
     try:
         client = get_minio_client()
-        all_files = list_all_files(client, settings.minio_bucket)
-        
-        file_exists = any(f["file_id"] == file_id for f in all_files)
-        
-        if not file_exists:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No file found with ID: {file_id}"
-            )
-        
-        deleted_count = delete_file_by_id(client, settings.minio_bucket, file_id)
-        
+        deleted_count = delete_file_by_id(client, settings.minio_bucket, document_id)
+
         return DeleteResponse(
-            file_id=file_id,
+            file_id=document_id,
             status="deleted",
-            message=f"Successfully deleted {deleted_count} file(s) with ID: {file_id}",
+            message=f"Successfully deleted {deleted_count} file(s) with ID: {document_id}",
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -105,6 +112,7 @@ async def delete_document(file_id: str):
 async def list_documents(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(10, ge=1, le=100, description="Items per page"),
+    all_files: list[dict] = Depends(get_all_files),
 ):
     """
     List all uploaded files with metadata from MinIO storage.
@@ -118,14 +126,11 @@ async def list_documents(
     - Custom metadata
     """
     try:
-        client = get_minio_client()
-        all_files = list_all_files(client, settings.minio_bucket)
-        
         total = len(all_files)
         start_idx = (page - 1) * page_size
         end_idx = start_idx + page_size
         paginated_files = all_files[start_idx:end_idx]
-        
+
         files = [
             UploadedFileResponse(
                 file_id=file_info["file_id"],
@@ -138,14 +143,14 @@ async def list_documents(
             )
             for file_info in paginated_files
         ]
-        
+
         return UploadedFilesListResponse(
             files=files,
             total=total,
             page=page,
             page_size=page_size,
         )
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -153,18 +158,45 @@ async def list_documents(
         )
 
 
-@app.post("/embeddings/{file_id}", response_model=EmbeddingResponse, tags=["Embedding"])
+@app.post(
+    "/embeddings/{document_id}", response_model=EmbeddingResponse, tags=["Embedding"]
+)
 async def generate_embeddings(
-    file_id: str,
+    document_id: str,
     background_tasks: BackgroundTasks,
+    all_files: list[dict] = Depends(get_all_files),
 ):
     """
-    Manually trigger embedding generation for an existing file in MinIO.
+    Start background task to generate embeddings for a document.
 
-    This is useful for re-processing a document that was previously uploaded.
+    Args:
+        document_id: ID of the document to process
+        background_tasks: Background task manager
+        all_files: List of all files for validation
+
+    Returns:
+        EmbeddingResponse with task_id and processing status
     """
-    raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Not implemented")
-  
+    # Validate document exists
+    file_exists = any(f["file_id"] == document_id for f in all_files)
+    if not file_exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No file found with ID: {document_id}",
+        )
+
+    # Generate unique task ID
+    task_id = str(uuid.uuid4())
+
+    background_tasks.add_task(run_embedding_task, task_id, document_id)
+
+    return EmbeddingResponse(
+        task_id=task_id,
+        file_id=document_id,
+        status="processing",
+        message=f"Embedding generation started. Use task_id to check progress at /tasks/{task_id}",
+    )
+
 
 @app.get("/health", response_model=HealthResponse, tags=["Services"])
 async def health_check():
@@ -184,7 +216,9 @@ async def query_documents(request: QueryRequest):
     4. Generate an answer using Claude
     5. Evaluate and potentially iterate
     """
-    raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Not implemented")
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Not implemented"
+    )
 
 
 @app.post("/scrappings", response_model=ScrapeResponse, tags=["Documents"])
@@ -201,8 +235,9 @@ async def scrape_webpage(
     3. Embedded using the embedding model
     4. Stored in the vector database
     """
-    raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Not implemented")
-
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Not implemented"
+    )
 
 
 @app.get("/tasks/{task_id}", tags=["Tasks"])
@@ -211,8 +246,34 @@ async def get_task_status_endpoint(task_id: str):
     Get the status of a background task.
 
     Useful for tracking upload, scraping, or embedding tasks.
+
+    Args:
+        task_id: Unique task identifier
+
+    Returns:
+        TaskStatusResponse with current task status
+
+    Raises:
+        HTTPException: 404 if task not found
     """
-    raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Not implemented")
+    task = await get_task(task_id)
+
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task not found: {task_id}",
+        )
+
+    return TaskStatusResponse(
+        task_id=task["task_id"],
+        status=task["status"],
+        file_id=task.get("file_id"),
+        message=task["message"],
+        chunks_processed=task.get("chunks_processed", 0),
+        total_chunks=task.get("total_chunks", 0),
+        created_at=task["created_at"],
+        completed_at=task.get("completed_at"),
+    )
 
 
 @app.post("/uploads", response_model=UploadResponse, tags=["Uploads"])

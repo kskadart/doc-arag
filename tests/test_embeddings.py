@@ -59,7 +59,9 @@ def test_embed_batch(embedding_service, mock_grpc_client):
     texts = ["First sentence.", "Second sentence.", "Third sentence."]
     embeddings = embedding_service.embed_batch(texts)
 
-    mock_grpc_client.embed_batch.assert_called_once_with(texts)
+    mock_grpc_client.embed_batch.assert_called_once_with(
+        texts, batch_size=32, max_length=None, normalize=None, pooling_strategy=None
+    )
     assert len(embeddings) == len(texts)
     assert all(len(emb) == 384 for emb in embeddings)
 
@@ -100,7 +102,9 @@ async def test_embed_batch_async(embedding_service, mock_grpc_client):
     texts = ["First sentence.", "Second sentence.", "Third sentence."]
     embeddings = await embedding_service.embed_batch_async(texts)
 
-    mock_grpc_client.embed_batch_async.assert_called_once_with(texts)
+    mock_grpc_client.embed_batch_async.assert_called_once_with(
+        texts, batch_size=32, max_length=None, normalize=None, pooling_strategy=None
+    )
     assert len(embeddings) == len(texts)
     assert all(len(emb) == 384 for emb in embeddings)
 

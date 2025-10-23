@@ -51,7 +51,7 @@ def detect_file_type(file_content: bytes) -> str:
 
         if mime not in SUPPORTED_MIME_TYPES:
             raise ValueError(
-                f"Unsupported file type: {mime}. " f"Supported types: PDF, DOC, DOCX"
+                f"Unsupported file type: {mime}. Supported types: PDF, DOC, DOCX"
             )
 
         return SUPPORTED_MIME_TYPES[mime]
@@ -63,7 +63,7 @@ def detect_file_type(file_content: bytes) -> str:
 async def download_file_from_url(url: str) -> Tuple[bytes, str, str]:
     """
     Download file from URL using httpx with optimized MIME detection.
-    
+
     First checks Content-Type header, then downloads only initial chunk
     for MIME detection before downloading the full file.
 
@@ -82,22 +82,22 @@ async def download_file_from_url(url: str) -> Tuple[bytes, str, str]:
             # First, make a HEAD request to check Content-Type header
             head_response = await client.head(url, follow_redirects=True)
             head_response.raise_for_status()
-            
+
             content_type = head_response.headers.get("content-type", "")
             detected_type_from_header = detect_file_type_from_header(content_type)
-            
+
             # Try to extract filename from Content-Disposition header
             content_disposition = head_response.headers.get("content-disposition", "")
             filename = None
-            
+
             if "filename=" in content_disposition:
                 filename = content_disposition.split("filename=")[1].strip('"')
-            
+
             # Fall back to URL path
             if not filename:
                 parsed_url = urlparse(url)
                 filename = parsed_url.path.split("/")[-1] or "downloaded_file"
-            
+
             # If we got a valid type from header, we can proceed with full download
             # Otherwise, download first chunk to detect MIME type
             if detected_type_from_header:
@@ -110,13 +110,13 @@ async def download_file_from_url(url: str) -> Tuple[bytes, str, str]:
                 # Download first chunk for MIME detection
                 headers = {"Range": f"bytes=0-{MIME_DETECTION_CHUNK_SIZE - 1}"}
                 chunk_response = await client.get(url, headers=headers)
-                
+
                 # Some servers don't support Range requests, fall back to full download
                 if chunk_response.status_code == 206:  # Partial Content
                     # Server supports range requests
                     first_chunk = chunk_response.content
                     detected_type = detect_file_type(first_chunk)
-                    
+
                     # Now download the full file
                     response = await client.get(url)
                     response.raise_for_status()
@@ -222,7 +222,7 @@ async def process_upload(upload_model) -> Dict[str, Any]:
         ValueError: If file type is unsupported or validation fails
         Exception: If download or upload fails
     """
-    
+
     if upload_model.document is not None:
         filename = upload_model.document_name
         first_chunk = await upload_model.document.read(MIME_DETECTION_CHUNK_SIZE)
@@ -232,7 +232,7 @@ async def process_upload(upload_model) -> Dict[str, Any]:
     else:
         file_content, filename, detected_type = await download_file_from_url(
             str(upload_model.document_url)
-        )        
+        )
         if upload_model.document_name and upload_model.document_name != filename:
             ext = filename.split(".")[-1] if "." in filename else ""
             filename = (

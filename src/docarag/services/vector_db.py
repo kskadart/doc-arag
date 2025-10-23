@@ -1,7 +1,6 @@
 import logging
 from typing import List, Dict, Any
 from weaviate.classes.config import Configure, DataType, Property
-from weaviate.collections import Collection
 from weaviate.collections.classes.config import CollectionConfig
 from weaviate.exceptions import WeaviateInsertManyAllFailedError
 
@@ -87,25 +86,35 @@ async def add_batch_objects(
     if not await is_collection_exists(collection_name):
         logger.info(f"Collection {collection_name} does not exist")
         return
+
     async with get_vector_db_client() as client:
-        collection: Collection = await client.collections.use(collection_name)
-        with collection.batch.fixed_size(batch_size=200) as batch:
-            for obj in content_list:
+        collection = client.collections.get(collection_name)
+
+        # Insert objects one by one using the async API
+        failed_count = 0
+        for obj in content_list:
+            try:
                 properties: Dict[str, Any] = obj["properties"]
                 vector: Dict[str, List[float]] = obj["vector"]
-                batch.add_object(
+
+                await collection.data.insert(
                     properties=properties,
                     vector=vector,
                 )
-                if batch.number_errors > 3:
-                    logger.error("Batch import stopped due to excessive errors.")
-                    break
-        failed_objects = collection.batch.failed_object
-        if failed_objects:
-            logger.error(f"Number of failed imports: {len(failed_objects)}")
-            logger.error(f"First failed object: {failed_objects[0]}")
-            raise WeaviateInsertManyAllFailedError(
-                f"Failed to add batch objects to collection '{collection_name}': {failed_objects}"
+            except Exception as e:
+                logger.error(f"Failed to insert object: {str(e)}")
+                failed_count += 1
+                if failed_count > 3:
+                    logger.error("Too many errors, stopping batch insert.")
+                    raise WeaviateInsertManyAllFailedError(
+                        f"Failed to add batch objects to collection '{collection_name}': {failed_count} failures"
+                    )
+
+        if failed_count > 0:
+            logger.warning(
+                f"Completed with {failed_count} failures out of {len(content_list)} objects"
             )
         else:
-            logger.info(f"Vectors added to collection {collection_name} successfully")
+            logger.info(
+                f"Successfully added {len(content_list)} vectors to collection {collection_name}"
+            )
