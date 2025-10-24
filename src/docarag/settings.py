@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     weaviate_collection: str = "Documents"
 
     chunk_size: int = 512
-    chunk_overlap: int = 50
+    chunk_overlap: int = 64
     max_file_size_mb: int = 50
 
     initial_retrieval_k: int = 20
