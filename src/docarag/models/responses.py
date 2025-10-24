@@ -64,6 +64,17 @@ class QueryResponse(BaseModel):
     total_results: int = Field(..., description="Total number of results returned")
 
 
+class AgentQueryResponse(BaseModel):
+    """Response for agent-based RAG query with generated answer."""
+
+    query: str = Field(..., description="Original query text")
+    answer: str = Field(..., description="Agent-generated answer based on retrieved context")
+    rephrased_query: Optional[str] = Field(None, description="Rephrased query used for retrieval")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Answer confidence score")
+    iterations: int = Field(..., ge=0, description="Number of agent iterations performed")
+    sources_used: int = Field(..., description="Number of source documents used")
+
+
 class DocumentResponse(BaseModel):
     """Response for single document information."""
 

@@ -40,5 +40,10 @@ class Settings(BaseSettings):
     embedding_normalize: bool = True
     embedding_batch_size: int = 32  # Process in smaller batches
 
+    agent_confidence_threshold: float = 0.7
+    anthropic_temperature: float = 0.7
+    reranker_service_url: str = "reranker-service:8352"
+    reranker_timeout: int = 30
+
 
 settings = Settings()

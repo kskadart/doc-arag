@@ -95,3 +95,14 @@ DELETE {{baseUrl}}/documents/{{file_id}}
 Accept: application/json
 
 ###
+
+### Query Documents (Russian - Test ДВС History)
+POST {{baseUrl}}/query
+Content-Type: application/json
+
+{
+  "query": "Расскажи мне историю ДВС",
+  "max_iterations": 2
+}
+
+###

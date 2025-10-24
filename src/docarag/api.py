@@ -9,7 +9,7 @@ from src.docarag.models import (
     UploadResponse,
     ScrapeResponse,
     EmbeddingResponse,
-    QueryResponse,
+    AgentQueryResponse,
     DeleteResponse,
     HealthResponse,
     UploadedFileResponse,
@@ -28,7 +28,6 @@ from src.docarag.settings import settings
 from src.docarag.services import (
     process_upload,
     create_default_collection,
-    find_nearest_vectors,
 )
 from src.docarag.tasks import run_embedding_task
 from src.docarag.task_progress import get_task
@@ -206,18 +205,29 @@ async def health_check():
     return HealthResponse(status="ok", timestamp=datetime.datetime.now(datetime.UTC))
 
 
-@app.post("/query", response_model=QueryResponse, tags=["Query"])
-async def query_documents(request: QueryRequest):
+@app.post("/query", response_model=AgentQueryResponse, tags=["Query"])
+async def query_documents_endpoint(request: QueryRequest):
     """
     Query the document collection using the RAG agent.
+
+    The agent will:
+    1. Understand and rephrase the query
+    2. Retrieve relevant documents using vector search
+    3. Generate an answer using Claude
+    4. Evaluate and potentially iterate
+    
+    Returns the agent's generated answer with confidence score and metadata.
     """
-    response = await find_nearest_vectors(request.query, request.domain, 20)
-    return QueryResponse(
-        query=request.query,
-        domain=request.domain,
-        results=response.results,
-        total_results=response.total_results,
-    )
+    from src.docarag.services.agent import query_documents
+    
+    try:
+        return await query_documents(request)
+    except Exception as e:
+        logger.error(f"Error processing query: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error processing query: {str(e)}",
+        )
 
 
 @app.post("/scrappings", response_model=ScrapeResponse, tags=["Documents"])
