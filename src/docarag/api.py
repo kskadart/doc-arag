@@ -25,9 +25,10 @@ from src.docarag.clients import (
 from src.docarag.settings import settings
 
 # from src.docarag.services.storage import get_storage_service
-from src.docarag.services.uploader import process_upload
 from src.docarag.services import (
+    process_upload,
     create_default_collection,
+    find_nearest_vectors,
 )
 from src.docarag.tasks import run_embedding_task
 from src.docarag.task_progress import get_task
@@ -39,6 +40,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await check_vector_db_connection()
+    # await delete_collection("DefaultDocuments")
     await create_default_collection()
     # vector_db_service = get_vectorstore_service()
     # vector_db_service.create_schema(embedding_dimension=embedding_dim)
@@ -208,16 +210,13 @@ async def health_check():
 async def query_documents(request: QueryRequest):
     """
     Query the document collection using the RAG agent.
-
-    The agent will:
-    1. Understand and rephrase the query
-    2. Retrieve relevant documents
-    3. Rerank documents for relevance
-    4. Generate an answer using Claude
-    5. Evaluate and potentially iterate
     """
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Not implemented"
+    response = await find_nearest_vectors(request.query, request.domain, 20)
+    return QueryResponse(
+        query=request.query,
+        domain=request.domain,
+        results=response.results,
+        total_results=response.total_results,
     )
 
 

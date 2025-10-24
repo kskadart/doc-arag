@@ -56,15 +56,12 @@ class Source(BaseModel):
 class QueryResponse(BaseModel):
     """Response for RAG query."""
 
-    answer: str = Field(..., description="Generated answer")
-    sources: List[Source] = Field(
-        default_factory=list, description="Source documents used"
+    query: str = Field(..., description="Original query text")
+    domain: str = Field(..., description="Collection that was searched")
+    results: List["VectorSearchResult"] = Field(
+        default_factory=list, description="Search results"
     )
-    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score")
-    iterations: int = Field(..., description="Number of agent iterations")
-    rephrased_query: Optional[str] = Field(
-        default=None, description="Rephrased version of the query"
-    )
+    total_results: int = Field(..., description="Total number of results returned")
 
 
 class DocumentResponse(BaseModel):
@@ -133,3 +130,29 @@ class TaskStatusResponse(BaseModel):
     completed_at: Optional[datetime] = Field(
         default=None, description="Task completion timestamp"
     )
+
+
+class VectorSearchResult(BaseModel):
+    """Single vector search result."""
+
+    uuid: str = Field(..., description="Weaviate object UUID")
+    document_name: str = Field(..., description="Name of the document")
+    page: int = Field(..., description="Page number within the document")
+    content: str = Field(..., description="Text content of the document chunk")
+    date_created: datetime = Field(
+        ..., description="Date and time the document chunk was created"
+    )
+    similarity_score: float = Field(
+        ..., ge=0.0, le=1.0, description="Similarity score (distance)"
+    )
+
+
+class VectorSearchResponse(BaseModel):
+    """Response for vector similarity search."""
+
+    query: str = Field(..., description="Original query text")
+    collection_name: str = Field(..., description="Collection that was searched")
+    results: List[VectorSearchResult] = Field(
+        default_factory=list, description="Search results"
+    )
+    total_results: int = Field(..., description="Total number of results returned")

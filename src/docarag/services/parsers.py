@@ -1,11 +1,11 @@
 from typing import List, Dict
 import io
 from pypdf import PdfReader
-from docx import Document
+from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
-def parse_pdf(file_content: bytes) -> Dict[int, str]:
+def parse_pdf(file_content: bytes) -> List[Document]:
     """
     Extract text from PDF file with page numbers.
 
@@ -22,13 +22,18 @@ def parse_pdf(file_content: bytes) -> Dict[int, str]:
         pdf_file = io.BytesIO(file_content)
         reader = PdfReader(pdf_file)
 
-        pages_dict = {}
+        documents: List[Document] = []
         for page_num, page in enumerate(reader.pages, start=1):
-            text = page.extract_text()
-            if text.strip():
-                pages_dict[page_num] = text
-
-        return pages_dict
+            text = page.extract_text().strip()
+            if len(text) > 0:
+                documents.append(
+                    Document(page_content=text, metadata={"page": page_num})
+                )
+            if (
+                page_num >= 7
+            ):  # TODO: Remove this once we have a better way to handle large PDFs
+                break
+        return documents
 
     except Exception as e:
         raise Exception(f"Failed to parse PDF: {str(e)}")
@@ -47,27 +52,31 @@ def parse_docx(file_content: bytes) -> Dict[int, str]:
     Raises:
         Exception: If DOCX parsing fails
     """
-    try:
-        docx_file = io.BytesIO(file_content)
-        doc = Document(docx_file)
+    raise NotImplementedError("DOCX parsing is not implemented yet")
+    # try:
+    #     docx_file = io.BytesIO(file_content)
+    #     doc = Document(docx_file)
 
-        pages_dict = {}
-        current_section_text = []
+    #     pages_dict = {}
+    #     current_section_text = []
 
-        for paragraph in doc.paragraphs:
-            text = paragraph.text.strip()
-            if text:
-                current_section_text.append(text)
+    #     for paragraph in doc.paragraphs:
+    #         text = paragraph.text.strip()
+    #         if text:
+    #             current_section_text.append(text)
 
-        # Combine all paragraphs into a single section
-        # For DOCX, we'll treat the entire document as page 1
-        if current_section_text:
-            pages_dict[1] = "\n\n".join(current_section_text)
+    #     # Combine all paragraphs into a single section
+    #     # For DOCX, we'll treat the entire document as page 1
+    #     if current_section_text:
+    #         combined_text = "\n\n".join(current_section_text)
+    #         # cleaned_text = clean_text(combined_text)
+    #         if combined_text:
+    #             pages_dict[1] = combined_text
 
-        return pages_dict
+    #     return pages_dict
 
-    except Exception as e:
-        raise Exception(f"Failed to parse DOCX: {str(e)}")
+    # except Exception as e:
+    #     raise Exception(f"Failed to parse DOCX: {str(e)}")
 
 
 def parse_document(
@@ -90,28 +99,31 @@ def parse_document(
         ValueError: If content type is not supported
         Exception: If parsing fails
     """
-    # Determine parser based on content_type
+
     if content_type == "application/pdf":
-        pages_dict = parse_pdf(file_content)
+        documents = parse_pdf(file_content)
     elif content_type in (
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/msword",
     ):
-        pages_dict = parse_docx(file_content)
+        # TODO: NOT IMPLEMENTED YET
+        documents = parse_docx(file_content)
     else:
         raise ValueError(f"Unsupported content type: {content_type}")
 
-    # Create text splitter
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
+        length_function=len,
+        is_separator_regex=True,
     )
-
-    # Split text and track pages
-    chunks = []
-    for page_num, page_text in pages_dict.items():
-        page_chunks = text_splitter.split_text(page_text)
-        for chunk_text in page_chunks:
-            chunks.append({"content": chunk_text, "page": page_num})
+    documents = text_splitter.split_documents(documents)
+    chunks = [
+        {
+            "content": document.page_content,
+            "page": document.metadata["page"],
+        }
+        for document in documents
+    ]
 
     return chunks

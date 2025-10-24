@@ -76,7 +76,12 @@ class EmbeddingGRPCClient:
 
         try:
             stub = self._get_stub()
-            request = EmbedTextRequest(text=text)
+            request = EmbedTextRequest(
+                text=text,
+                max_length=settings.embedding_max_length,
+                normalize=settings.embedding_normalize,
+                pooling_strategy=settings.embedding_pooling_strategy,
+            )
             response = await stub.EmbedText(request, timeout=self.timeout)
             return list(response.embedding)
 
