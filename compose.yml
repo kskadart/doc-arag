@@ -4,8 +4,9 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     container_name: doc-arag
-    ports:
-      - "8103:8103"
+    # Port commented out - API only accessible via Caddy reverse proxy
+    # ports:
+    #   - "8103:8103"
     volumes:
       - ./src/docarag:/app/src/docarag
     restart: unless-stopped
