@@ -215,11 +215,11 @@ async def query_documents_endpoint(request: QueryRequest):
     2. Retrieve relevant documents using vector search
     3. Generate an answer using Claude
     4. Evaluate and potentially iterate
-    
+
     Returns the agent's generated answer with confidence score and metadata.
     """
     from src.docarag.services.agent import query_documents
-    
+
     try:
         return await query_documents(request)
     except Exception as e:

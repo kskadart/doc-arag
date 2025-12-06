@@ -15,9 +15,9 @@ def test_should_continue():
         should_iterate=True,
         max_iterations=2,
     )
-    
+
     assert should_continue(state_continue) == "rephrase_query"
-    
+
     state_end = AgentState(
         query="test",
         confidence=0.9,
@@ -25,6 +25,5 @@ def test_should_continue():
         should_iterate=False,
         max_iterations=2,
     )
-    
-    assert should_continue(state_end) == "end"
 
+    assert should_continue(state_end) == "end"
