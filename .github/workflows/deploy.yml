@@ -66,7 +66,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: "docker/compose.prod.yml"
-          target: "~/doc-arag"
+          target: "/opt/doc-arag"
           strip_components: 1
 
       - name: Deploy via SSH
@@ -76,7 +76,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd ~/doc-arag
+            cd /opt/doc-arag
             
             # Create .env file from GitHub Secrets
             cat > .env << 'EOF'
