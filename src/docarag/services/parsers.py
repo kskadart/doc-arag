@@ -29,10 +29,10 @@ def parse_pdf(file_content: bytes) -> List[Document]:
                 documents.append(
                     Document(page_content=text, metadata={"page": page_num})
                 )
-            if (
-                page_num >= 7
-            ):  # TODO: Remove this once we have a better way to handle large PDFs
-                break
+            # if (
+            #     page_num >= 7
+            # ):  # TODO: Remove this once we have a better way to handle large PDFs
+            #     break
         return documents
 
     except Exception as e:
