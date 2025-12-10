@@ -11,6 +11,23 @@ class Settings(BaseSettings):
 
     anthropic_api_key: str
     anthropic_model: str
+    anthropic_proxy_url: str | None = None
+    anthropic_proxy_user: str | None = None
+    anthropic_proxy_pass: str | None = None
+
+    @property
+    def anthropic_proxy(self) -> str | None:
+        """Build full proxy URL with credentials if provided."""
+        if not self.anthropic_proxy_url:
+            return None
+
+        if self.anthropic_proxy_user and self.anthropic_proxy_pass:
+            # Parse URL and insert credentials: http://user:pass@host:port
+            if "://" in self.anthropic_proxy_url:
+                scheme, rest = self.anthropic_proxy_url.split("://", 1)
+                return f"{scheme}://{self.anthropic_proxy_user}:{self.anthropic_proxy_pass}@{rest}"
+
+        return self.anthropic_proxy_url
 
     minio_endpoint: str
     minio_access_key: SecretStr

@@ -16,6 +16,18 @@ from src.docarag.settings import settings
 logger = logging.getLogger(__name__)
 
 
+def get_anthropic_client(temperature: float = 0.7) -> ChatAnthropic:
+    """
+    Create a ChatAnthropic client with optional proxy support.
+    """
+    return ChatAnthropic(
+        model=settings.anthropic_model,
+        api_key=settings.anthropic_api_key,
+        temperature=temperature,
+        anthropic_proxy=settings.anthropic_proxy,
+    )
+
+
 class AgentState(BaseModel):
     """State schema for the RAG agent graph."""
 
@@ -50,11 +62,7 @@ async def rephrase_query_node(state: AgentState) -> Dict[str, Any]:
 
     logger.info(f"Rephrasing query (iteration {iterations}): {query}")
 
-    llm = ChatAnthropic(
-        model=settings.anthropic_model,
-        api_key=settings.anthropic_api_key,
-        temperature=0.3,
-    )
+    llm = get_anthropic_client(temperature=0.3)
 
     rephrase_prompt = f"""You are a query optimization assistant. Your task is to rephrase the user's question to make it more effective for semantic search in a document database.
 
@@ -166,11 +174,7 @@ async def generate_answer_node(state: AgentState) -> Dict[str, Any]:
 
     context = "\n".join(context_parts)
 
-    llm = ChatAnthropic(
-        model=settings.anthropic_model,
-        api_key=settings.anthropic_api_key,
-        temperature=settings.anthropic_temperature,
-    )
+    llm = get_anthropic_client(temperature=settings.anthropic_temperature)
 
     generation_prompt = f"""You are a helpful AI assistant that answers questions based on the provided document context.
 
@@ -211,11 +215,7 @@ async def evaluate_answer_node(state: AgentState) -> Dict[str, Any]:
             "should_iterate": False,
         }
 
-    llm = ChatAnthropic(
-        model=settings.anthropic_model,
-        api_key=settings.anthropic_api_key,
-        temperature=0.1,
-    )
+    llm = get_anthropic_client(temperature=0.1)
 
     evaluation_prompt = f"""You are an answer quality evaluator. Assess how well the given answer addresses the user's question.
 
