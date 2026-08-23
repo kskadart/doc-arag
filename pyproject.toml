@@ -51,8 +51,15 @@ exclude = [".*_pb2.py$", ".*_pb2_grpc.py$"]
 module = [
     "src.docarag.embedding_pb2",
     "src.docarag.embedding_pb2_grpc",
+    "src.docarag.reranker_pb2",
+    "src.docarag.reranker_pb2_grpc",
 ]
 follow_imports = "skip"
+
+# grpcio ships no type information and has no stub package on the lock file
+[[tool.mypy.overrides]]
+module = ["grpc.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -1,124 +1,75 @@
-# from typing import List, Dict, Any, Optional
-# from sentence_transformers import CrossEncoder
-# from src.docarag.config import settings
+"""Service for reranking retrieved documents by relevance using the external gRPC reranker."""
+
+import logging
+from typing import Any
+
+from src.docarag.clients.reranker_client import RerankerGRPCClient
+
+logger = logging.getLogger(__name__)
 
 
-# class RerankerService:
-#     """Service for reranking documents using a cross-encoder model."""
+class RerankerService:
+    """Service for reranking documents using the external gRPC reranker."""
 
-#     def __init__(self, model_name: Optional[str] = None):
-#         """
-#         Initialize reranker service.
+    def __init__(self, client: RerankerGRPCClient | None = None) -> None:
+        """
+        Initialize reranker service.
 
-#         Args:
-#             model_name: Name of the cross-encoder model
-#         """
-#         self.model_name = model_name or settings.reranker_model_name
-#         self.model: Optional[CrossEncoder] = None
+        Args:
+            client: Optional gRPC client instance (creates new one if not provided)
+        """
+        self.client = client or RerankerGRPCClient()
 
-#     def load_model(self) -> None:
-#         """Load the reranker model."""
-#         if self.model is None:
-#             self.model = CrossEncoder(self.model_name)
+    async def rerank_async(
+        self,
+        query: str,
+        documents: list[dict[str, Any]],
+        top_k: int,
+        content_key: str = "content",
+    ) -> list[dict[str, Any]]:
+        """
+        Rerank documents by relevance to the query.
 
-#     def rerank(
-#         self,
-#         query: str,
-#         documents: List[Dict[str, Any]],
-#         top_k: Optional[int] = None,
-#         score_key: str = "content"
-#     ) -> List[Dict[str, Any]]:
-#         """
-#         Rerank documents based on relevance to query.
+        Args:
+            query: Search query
+            documents: Retrieved documents to rerank, each holding text under `content_key`
+            top_k: Number of top-scoring documents to return
+            content_key: Key in each document dict holding the text to score
 
-#         Args:
-#             query: Search query
-#             documents: List of document dictionaries
-#             top_k: Number of top results to return
-#             score_key: Key in document dict containing text to score
+        Returns:
+            The `top_k` documents with the highest relevance score, sorted descending,
+            each augmented with a `rerank_score` field. Empty input returns an empty list.
 
-#         Returns:
-#             Reranked and scored documents
+        Raises:
+            ValueError: If query is empty
+            grpc.RpcError: If the reranker service is unavailable or times out
+        """
+        if not documents:
+            return []
 
-#         Raises:
-#             ValueError: If query or documents are empty
-#             Exception: If reranking fails
-#         """
-#         if not query or not query.strip():
-#             raise ValueError("Query cannot be empty")
+        texts = [doc.get(content_key, "") for doc in documents]
+        scores = await self.client.rerank_async(query, texts)
 
-#         if not documents:
-#             return []
+        scored_docs = [
+            {**doc, "rerank_score": score}
+            for doc, score in zip(documents, scores, strict=True)
+        ]
+        scored_docs.sort(key=lambda doc: doc["rerank_score"], reverse=True)
 
-#         if top_k is None:
-#             top_k = settings.rerank_top_k
+        return scored_docs[:top_k]
 
-#         if self.model is None:
-#             self.load_model()
-
-#         try:
-#             # Prepare query-document pairs for scoring
-#             pairs = [[query, doc.get(score_key, "")] for doc in documents]
-
-#             # Get scores from cross-encoder
-#             scores = self.model.predict(pairs)
-
-#             # Attach scores to documents
-#             scored_docs = []
-#             for doc, score in zip(documents, scores):
-#                 doc_copy = doc.copy()
-#                 doc_copy["rerank_score"] = float(score)
-#                 scored_docs.append(doc_copy)
-
-#             # Sort by score in descending order
-#             scored_docs.sort(key=lambda x: x["rerank_score"], reverse=True)
-
-#             # Return top-k results
-#             return scored_docs[:top_k]
-
-#         except Exception as e:
-#             raise Exception(f"Failed to rerank documents: {str(e)}")
-
-#     def score_pairs(self, query: str, texts: List[str]) -> List[float]:
-#         """
-#         Score query-text pairs.
-
-#         Args:
-#             query: Search query
-#             texts: List of texts to score
-
-#         Returns:
-#             List of relevance scores
-
-#         Raises:
-#             ValueError: If inputs are invalid
-#             Exception: If scoring fails
-#         """
-#         if not query or not query.strip():
-#             raise ValueError("Query cannot be empty")
-
-#         if not texts:
-#             return []
-
-#         if self.model is None:
-#             self.load_model()
-
-#         try:
-#             pairs = [[query, text] for text in texts]
-#             scores = self.model.predict(pairs)
-#             return [float(s) for s in scores]
-
-#         except Exception as e:
-#             raise Exception(f"Failed to score pairs: {str(e)}")
+    async def close_async(self) -> None:
+        """Close the gRPC client connection."""
+        await self.client.close_async()
 
 
-# # Global reranker service instance
-# reranker_service: Optional[RerankerService] = None
+# Global reranker service instance
+reranker_service: RerankerService | None = None
 
 
-# def get_reranker_service() -> RerankerService:
-#     """Get or create reranker service instance."""
-#     global reranker_service
-#     if reranker_service is None:
-#         reranker_service = RerankerService()
-#     return reranker_service
+def get_reranker_service() -> RerankerService:
+    """Get or create reranker service instance."""
+    global reranker_service
+    if reranker_service is None:
+        reranker_service = RerankerService()
+    return reranker_service
