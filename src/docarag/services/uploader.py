@@ -1,8 +1,10 @@
-from typing import Tuple, Dict, Any, Optional
 import uuid
+from urllib.parse import urlparse
+from typing import Any
+
 import magic
 import httpx
-from urllib.parse import urlparse
+
 from src.docarag.settings import settings
 from src.docarag.clients.minio_client import (
     get_minio_client,
@@ -10,12 +12,13 @@ from src.docarag.clients.minio_client import (
     upload_file_to_minio,
 )
 from src.docarag.consts import SUPPORTED_MIME_TYPES
+from src.docarag.models.upload import UploadModel
 
 # Size of initial chunk to download for MIME detection (8KB is enough for magic numbers)
 MIME_DETECTION_CHUNK_SIZE = 8192
 
 
-def detect_file_type_from_header(content_type: str) -> Optional[str]:
+def detect_file_type_from_header(content_type: str) -> str | None:
     """
     Detect file type from Content-Type header.
 
@@ -23,7 +26,7 @@ def detect_file_type_from_header(content_type: str) -> Optional[str]:
         content_type: Content-Type header value
 
     Returns:
-        Normalized file type (pdf, doc, docx) or None if not supported/recognized
+        Normalized file type (pdf, doc, docx, md) or None if not supported
     """
     # Clean up content type (remove charset and other parameters)
     mime_type = content_type.split(";")[0].strip().lower()
@@ -51,7 +54,7 @@ def detect_file_type(file_content: bytes) -> str:
 
         if mime not in SUPPORTED_MIME_TYPES:
             raise ValueError(
-                f"Unsupported file type: {mime}. Supported types: PDF, DOC, DOCX"
+                f"Unsupported file type: {mime}. Supported types: PDF, DOC, DOCX, MD"
             )
 
         return SUPPORTED_MIME_TYPES[mime]
@@ -60,7 +63,7 @@ def detect_file_type(file_content: bytes) -> str:
         raise ValueError(f"Failed to detect file type: {str(e)}")
 
 
-async def download_file_from_url(url: str) -> Tuple[bytes, str, str]:
+async def download_file_from_url(url: str) -> tuple[bytes, str, str]:
     """
     Download file from URL using httpx with optimized MIME detection.
 
@@ -142,7 +145,8 @@ def upload_document(
     filename: str,
     file_id: str,
     detected_type: str,
-) -> Dict[str, Any]:
+    domain: str,
+) -> dict[str, Any]:
     """
     Upload document to MinIO storage.
 
@@ -150,7 +154,8 @@ def upload_document(
         file_content: File content as bytes
         filename: Original filename
         file_id: Unique file identifier
-        detected_type: Detected file type (pdf, doc, docx)
+        detected_type: Detected file type (pdf, doc, docx, md)
+        domain: Knowledge domain slug stored alongside the object
 
     Returns:
         Dictionary with upload results
@@ -172,6 +177,7 @@ def upload_document(
         "pdf": "application/pdf",
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "doc": "application/msword",
+        "md": "text/markdown",
     }
     content_type = content_type_map.get(detected_type, "application/octet-stream")
 
@@ -182,7 +188,7 @@ def upload_document(
         file_content=file_content,
         filename=filename,
         content_type=content_type,
-        metadata={"type": detected_type},
+        metadata={"type": detected_type, "domain": domain},
     )
 
     return {
@@ -192,10 +198,11 @@ def upload_document(
         "file_type": detected_type,
         "size_bytes": len(file_content),
         "content_type": content_type,
+        "domain": domain,
     }
 
 
-async def process_upload(upload_model) -> Dict[str, Any]:
+async def process_upload(upload_model: UploadModel) -> dict[str, Any]:
     """
     Process document upload from either direct file or URL.
 
@@ -217,6 +224,7 @@ async def process_upload(upload_model) -> Dict[str, Any]:
             - file_type: Detected file type
             - size_bytes: File size in bytes
             - content_type: MIME content type
+            - domain: Knowledge domain slug
 
     Raises:
         ValueError: If file type is unsupported or validation fails
@@ -248,6 +256,7 @@ async def process_upload(upload_model) -> Dict[str, Any]:
         filename=filename,
         file_id=file_id,
         detected_type=detected_type,
+        domain=upload_model.domain,
     )
 
     return upload_result

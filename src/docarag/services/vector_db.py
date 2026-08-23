@@ -1,13 +1,20 @@
 import logging
-from typing import List, Dict, Any
-from weaviate.classes.config import Configure, DataType, Property
+from typing import Any
+
+from weaviate.classes.config import Configure
+from weaviate.classes.query import Filter
 from weaviate.collections.classes.config import CollectionConfig
 from weaviate.collections.classes.grpc import MetadataQuery
 from weaviate.exceptions import WeaviateInsertManyAllFailedError
 
 from src.docarag.clients import get_vector_db_client
 from src.docarag.clients.embedding import EmbeddingGRPCClient
+from src.docarag.consts import DEFAULT_COLLECTION_NAME, DEFAULT_DOMAIN
 from src.docarag.models.responses import VectorSearchResponse, VectorSearchResult
+from src.docarag.utils.default_collection_conf import (
+    DEFAULT_COLLECTION_DESCRIPTION,
+    DEFAULT_COLLECTION_PROPERTIES,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -21,43 +28,16 @@ async def is_collection_exists(collection_name: str) -> bool:
 
 
 async def create_default_collection() -> None:
-    collection_name: str = "DefaultDocuments"
+    """Create the default document collection unless it already exists."""
+    collection_name = DEFAULT_COLLECTION_NAME
     if await is_collection_exists(collection_name):
         logger.info(f"Collection {collection_name} already exists")
         return
     async with get_vector_db_client() as client:
         await client.collections.create(
             name=collection_name,
-            description="Default collection for general document storage and retrieval",
-            properties=[
-                Property(
-                    name="document_name",
-                    data_type=DataType.TEXT,
-                    description="Name of the document",
-                    index_filterable=True,
-                    index_searchable=True,
-                ),
-                Property(
-                    name="page",
-                    data_type=DataType.INT,
-                    description="Page number within the document",
-                    index_filterable=True,
-                    index_searchable=False,
-                ),
-                Property(
-                    name="content",
-                    data_type=DataType.TEXT,
-                    description="Text content of the document chunk",
-                    index_searchable=True,
-                ),
-                Property(
-                    name="date_created",
-                    data_type=DataType.DATE,
-                    description="Date and time the document chunk was created",
-                    index_filterable=True,
-                    index_searchable=False,
-                ),
-            ],
+            description=DEFAULT_COLLECTION_DESCRIPTION,
+            properties=DEFAULT_COLLECTION_PROPERTIES,
             vector_config=Configure.Vectors.self_provided(
                 name="content_vector",
             ),
@@ -66,7 +46,7 @@ async def create_default_collection() -> None:
 
 
 async def create_collection_from_config(collection_config: CollectionConfig) -> None:
-    collection_name = collection_config["name"]
+    collection_name = collection_config.name
     if await is_collection_exists(collection_name):
         logger.info(f"Collection {collection_name} already exists")
         return
@@ -84,8 +64,41 @@ async def delete_collection(collection_name: str) -> None:
         logger.info(f"Collection {collection_name} deleted successfully")
 
 
+async def delete_objects_by_document_name(
+    collection_name: str, document_name: str
+) -> int:
+    """
+    Delete every chunk that belongs to a document.
+
+    Keeps re-embedding idempotent and clears the vector database when a
+    document is removed from storage.
+
+    Args:
+        collection_name: Name of the collection to purge
+        document_name: Value of the document_name property to match
+
+    Returns:
+        Number of deleted objects, zero when the collection does not exist
+    """
+    if not await is_collection_exists(collection_name):
+        logger.info(f"Collection {collection_name} does not exist")
+        return 0
+
+    async with get_vector_db_client() as client:
+        collection = client.collections.use(collection_name)
+        result = await collection.data.delete_many(
+            where=Filter.by_property("document_name").equal(document_name)
+        )
+        deleted_count: int = result.successful
+        logger.info(
+            f"Deleted {deleted_count} objects of '{document_name}' "
+            f"from collection {collection_name}"
+        )
+        return deleted_count
+
+
 async def add_batch_objects(
-    collection_name: str, content_list: List[Dict[str, Any]]
+    collection_name: str, content_list: list[dict[str, Any]]
 ) -> None:
     if not await is_collection_exists(collection_name):
         logger.info(f"Collection {collection_name} does not exist")
@@ -98,8 +111,8 @@ async def add_batch_objects(
         failed_count = 0
         for obj in content_list:
             try:
-                properties: Dict[str, Any] = obj["properties"]
-                vector: Dict[str, List[float]] = obj["vector"]
+                properties: dict[str, Any] = obj["properties"]
+                vector: dict[str, list[float]] = obj["vector"]
 
                 await collection.data.insert(
                     properties=properties,
@@ -172,6 +185,7 @@ async def find_nearest_vectors(
                 document_name=obj.properties.get("document_name", ""),
                 page=obj.properties.get("page", 0),
                 content=obj.properties.get("content", ""),
+                domain=obj.properties.get("domain", DEFAULT_DOMAIN),
                 date_created=obj.properties.get("date_created"),
                 similarity_score=(
                     1.0 - obj.metadata.distance

@@ -9,6 +9,7 @@ from src.docarag.clients.minio_client import (
     list_all_files,
     delete_file_by_id,
     download_file_by_id,
+    extract_domain,
 )
 
 
@@ -21,4 +22,5 @@ __all__ = [
     "list_all_files",
     "delete_file_by_id",
     "download_file_by_id",
+    "extract_domain",
 ]
