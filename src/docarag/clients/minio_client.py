@@ -1,10 +1,16 @@
-from typing import Optional, Dict
 import datetime
+from collections.abc import Mapping
 from io import BytesIO
 from urllib.parse import urlparse
+
 from minio import Minio
 from minio.error import S3Error
+
+from src.docarag.consts import DEFAULT_DOMAIN
 from src.docarag.settings import settings
+
+# S3 stores user metadata prefixed, minio returns the raw response headers
+DOMAIN_METADATA_KEYS = ("x-amz-meta-domain", "domain")
 
 
 def get_minio_client() -> Minio:
@@ -71,7 +77,7 @@ def upload_file_to_minio(
     file_content: bytes,
     filename: str,
     content_type: str,
-    metadata: Optional[Dict[str, str]] = None,
+    metadata: dict[str, str] | None = None,
 ) -> str:
     """
     Upload file to MinIO.
@@ -94,11 +100,11 @@ def upload_file_to_minio(
     try:
         object_key = f"{file_id}/{filename}"
 
-        minio_metadata = metadata or {}
+        minio_metadata: dict[str, str | list[str] | tuple[str]] = dict(metadata or {})
         minio_metadata.update(
             {
                 "filename": filename,
-                "upload_timestamp": datetime.datetime.now(datetime.UTC),
+                "upload_timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
             }
         )
 
@@ -122,7 +128,7 @@ def upload_file_to_minio(
         raise Exception(f"Failed to upload file to MinIO: {str(e)}")
 
 
-def list_all_files(client: Minio, bucket: str) -> list[Dict]:
+def list_all_files(client: Minio, bucket: str) -> list[dict]:
     """
     List all files in MinIO bucket with their metadata.
 
@@ -209,6 +215,22 @@ def delete_file_by_id(client: Minio, bucket: str, file_id: str) -> int:
         raise Exception(f"Failed to delete files from MinIO: {str(e)}")
 
 
+def extract_domain(metadata: Mapping[str, str] | None) -> str:
+    """
+    Read the knowledge domain slug from S3 user metadata.
+
+    Args:
+        metadata: Object metadata as returned by stat_object
+
+    Returns:
+        Domain slug, the default one for objects uploaded without a domain
+    """
+    for key, value in (metadata or {}).items():
+        if key.lower() in DOMAIN_METADATA_KEYS:
+            return value
+    return DEFAULT_DOMAIN
+
+
 def download_file_by_id(
     client: Minio, bucket: str, document_id: str
 ) -> tuple[bytes, str, dict]:
@@ -222,7 +244,7 @@ def download_file_by_id(
 
     Returns:
         Tuple of (file_content: bytes, filename: str, metadata: dict)
-        where metadata includes content_type and other file metadata
+        where metadata includes content_type, domain and other file metadata
 
     Raises:
         Exception: If document not found or download fails
@@ -252,6 +274,7 @@ def download_file_by_id(
             "filename": filename,
             "size_bytes": obj.size,
             "last_modified": obj.last_modified,
+            "domain": extract_domain(stat.metadata),
             "metadata": stat.metadata or {},
         }
 

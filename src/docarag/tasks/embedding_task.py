@@ -2,12 +2,16 @@
 
 import logging
 from datetime import datetime, timezone
-from typing import List, Dict, Any
+from typing import Any
 
 from src.docarag.clients import get_minio_client, download_file_by_id
+from src.docarag.consts import DEFAULT_COLLECTION_NAME, DEFAULT_DOMAIN
 from src.docarag.services.parsers import parse_document
 from src.docarag.services.embeddings import get_embedding_service
-from src.docarag.services.vector_db import add_batch_objects
+from src.docarag.services.vector_db import (
+    add_batch_objects,
+    delete_objects_by_document_name,
+)
 from src.docarag.settings import settings
 from src.docarag.task_progress import _update_task_storage
 
@@ -22,7 +26,7 @@ async def run_embedding_task(task_id: str, document_id: str) -> None:
     1. Download file from MinIO
     2. Parse document into chunks
     3. Generate embeddings using gRPC service
-    4. Store embeddings in vector database
+    4. Purge previous chunks of the document and store the new embeddings
     5. Update task status throughout
 
     Args:
@@ -50,6 +54,7 @@ async def run_embedding_task(task_id: str, document_id: str) -> None:
             client, settings.minio_bucket, document_id
         )
         content_type = metadata.get("content_type", "application/octet-stream")
+        domain = metadata.get("domain", DEFAULT_DOMAIN)
 
         # Step 2: Parse document into chunks
         logger.info(f"Task {task_id}: Parsing document")
@@ -74,9 +79,7 @@ async def run_embedding_task(task_id: str, document_id: str) -> None:
         logger.info(f"Task {task_id}: Generating embeddings for {len(chunks)} chunks")
 
         # Filter out empty or whitespace-only chunks
-        valid_chunks = [
-            chunk for chunk in chunks if chunk["content"] and chunk["content"].strip()
-        ]
+        valid_chunks = [chunk for chunk in chunks if str(chunk["content"]).strip()]
 
         if not valid_chunks:
             raise ValueError("No valid chunks with content found after filtering")
@@ -95,7 +98,7 @@ async def run_embedding_task(task_id: str, document_id: str) -> None:
         )
 
         embedding_service = get_embedding_service()
-        texts = [chunk["content"] for chunk in valid_chunks]
+        texts = [str(chunk["content"]) for chunk in valid_chunks]
 
         # Log detailed information about texts being sent
         logger.info(
@@ -143,7 +146,7 @@ async def run_embedding_task(task_id: str, document_id: str) -> None:
             message="Storing embeddings in vector database",
         )
 
-        batch_objects: List[Dict[str, Any]] = []
+        batch_objects: list[dict[str, Any]] = []
         for chunk, embedding in zip(valid_chunks, embeddings):
             batch_objects.append(
                 {
@@ -151,6 +154,7 @@ async def run_embedding_task(task_id: str, document_id: str) -> None:
                         "document_name": filename,
                         "page": chunk["page"],
                         "content": chunk["content"],
+                        "domain": domain,
                         "date_created": datetime.now(timezone.utc),
                     },
                     "vector": {
@@ -159,8 +163,14 @@ async def run_embedding_task(task_id: str, document_id: str) -> None:
                 }
             )
 
-        # Step 5: Store to vector database
-        collection_name = "DefaultDocuments"
+        # Step 5: Store to vector database, previous chunks first go away so
+        # that re-running the task for the same document does not duplicate them
+        collection_name = DEFAULT_COLLECTION_NAME
+        purged_count = await delete_objects_by_document_name(collection_name, filename)
+        if purged_count > 0:
+            logger.info(
+                f"Task {task_id}: Purged {purged_count} stale chunks of {filename}"
+            )
         await add_batch_objects(collection_name, batch_objects)
 
         logger.info(f"Task {task_id}: Successfully stored {len(batch_objects)} vectors")

@@ -1,7 +1,10 @@
 """FastAPI dependency injection functions."""
 
-from typing import Optional, Callable, List, Dict
+from collections.abc import Callable
+
 from fastapi import Form, File, UploadFile, HTTPException
+
+from src.docarag.consts import DEFAULT_DOMAIN
 from src.docarag.models.upload import UploadModel
 from src.docarag.clients import get_minio_client, list_all_files, download_file_by_id
 from src.docarag.services.parsers import parse_document
@@ -10,8 +13,11 @@ from src.docarag.settings import settings
 
 async def upload_dependencies(
     document_name: str = Form(..., max_length=255, description="Name of the document"),
-    document: Optional[UploadFile] = File(None),
-    document_url: Optional[str] = Form(None, description="URL to download file from"),
+    document: UploadFile | None = File(None),
+    document_url: str | None = Form(None, description="URL to download file from"),
+    domain: str = Form(
+        DEFAULT_DOMAIN, description="Knowledge domain slug the document belongs to"
+    ),
 ) -> UploadModel:
     """
     Dependency function to validate upload request parameters.
@@ -20,6 +26,7 @@ async def upload_dependencies(
         document_name: Name of the document
         document: Optional file upload
         document_url: Optional URL to download file from
+        domain: Knowledge domain slug the document belongs to
 
     Returns:
         Validated UploadModel instance
@@ -33,6 +40,7 @@ async def upload_dependencies(
             document_name=document_name,
             document=document,
             document_url=document_url,
+            domain=domain,
         )
         return upload_model
     except ValueError as e:
@@ -90,19 +98,19 @@ def file_downloader() -> Callable[[str], tuple[bytes, str, dict]]:
     return download
 
 
-def parse_document_dependency() -> Callable[[bytes, str], List[Dict[str, str | int]]]:
+def parse_document_dependency() -> Callable[[bytes, str], list[dict[str, str | int]]]:
     """
     Dependency function to get a document parser function.
 
     Returns:
         A callable that parses a document and returns chunks
-        Signature: (file_content: bytes, content_type: str) -> List[Dict[str, str | int]]
+        Signature: (file_content: bytes, content_type: str) -> list[dict[str, str | int]]
 
     Raises:
         HTTPException: If parser initialization fails
     """
 
-    def parser(file_content: bytes, content_type: str) -> List[Dict[str, str | int]]:
+    def parser(file_content: bytes, content_type: str) -> list[dict[str, str | int]]:
         try:
             return parse_document(
                 file_content=file_content,

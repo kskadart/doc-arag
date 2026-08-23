@@ -1,7 +1,11 @@
 import pytest
 from unittest.mock import Mock, AsyncMock, patch
 from datetime import datetime
-from src.docarag.services.vector_db import find_nearest_vectors
+from weaviate.collections.classes.batch import DeleteManyReturn
+from src.docarag.services.vector_db import (
+    delete_objects_by_document_name,
+    find_nearest_vectors,
+)
 from src.docarag.models.responses import VectorSearchResponse
 
 
@@ -197,3 +201,46 @@ async def test_find_nearest_vectors_embedding_failure(mock_weaviate_client):
                 await find_nearest_vectors(
                     query="test query", collection_name="TestCollection", limit=10
                 )
+
+
+@pytest.mark.asyncio
+async def test_delete_objects_by_document_name_filters_by_document(
+    mock_weaviate_client,
+):
+    """Test that only the chunks of the requested document are deleted."""
+    mock_collection = Mock()
+    mock_collection.data = Mock()
+    mock_collection.data.delete_many = AsyncMock(
+        return_value=DeleteManyReturn(failed=0, matches=4, objects=None, successful=4)
+    )
+    mock_weaviate_client.collections.use = Mock(return_value=mock_collection)
+
+    with (
+        patch(
+            "src.docarag.services.vector_db.get_vector_db_client",
+            return_value=mock_weaviate_client,
+        ),
+        patch("src.docarag.services.vector_db.is_collection_exists", return_value=True),
+    ):
+        deleted = await delete_objects_by_document_name(
+            "TestCollection", "test_doc.pdf"
+        )
+
+    assert deleted == 4
+    mock_collection.data.delete_many.assert_awaited_once()
+    where_filter = mock_collection.data.delete_many.call_args.kwargs["where"]
+    assert where_filter.target == "document_name"
+    assert where_filter.value == "test_doc.pdf"
+
+
+@pytest.mark.asyncio
+async def test_delete_objects_by_document_name_missing_collection_returns_zero():
+    """Test that purging a collection that does not exist is a no-op."""
+    with patch(
+        "src.docarag.services.vector_db.is_collection_exists", return_value=False
+    ):
+        deleted = await delete_objects_by_document_name(
+            "NonExistentCollection", "test_doc.pdf"
+        )
+
+    assert deleted == 0

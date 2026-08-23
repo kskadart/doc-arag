@@ -1,8 +1,10 @@
 from datetime import datetime
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 import os
 import pytest
 from fastapi.testclient import TestClient
+
+from src.docarag.consts import DEFAULT_COLLECTION_NAME
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -218,10 +220,11 @@ def test_list_uploaded_files_metadata_included(client, mock_minio_files):
     app.dependency_overrides.clear()
 
 
+@patch("src.docarag.api.delete_objects_by_document_name", new_callable=AsyncMock)
 @patch("src.docarag.api.get_minio_client")
 @patch("src.docarag.api.delete_file_by_id")
 def test_delete_uploaded_file_success(
-    mock_delete_file, mock_get_minio, client, mock_minio_files
+    mock_delete_file, mock_get_minio, mock_delete_chunks, client, mock_minio_files
 ):
     """
     Test successful deletion of an uploaded file.
@@ -230,6 +233,7 @@ def test_delete_uploaded_file_success(
     app.dependency_overrides[get_all_files_orig] = lambda: mock_minio_files
     mock_get_minio.return_value = Mock()
     mock_delete_file.return_value = 1
+    mock_delete_chunks.return_value = 0
 
     response = test_client.delete("/documents/test-file-id-1")
 
@@ -259,10 +263,11 @@ def test_delete_uploaded_file_not_found(client):
     app.dependency_overrides.clear()
 
 
+@patch("src.docarag.api.delete_objects_by_document_name", new_callable=AsyncMock)
 @patch("src.docarag.api.get_minio_client")
 @patch("src.docarag.api.delete_file_by_id")
 def test_delete_uploaded_file_multiple_objects(
-    mock_delete_file, mock_get_minio, client, mock_minio_files
+    mock_delete_file, mock_get_minio, mock_delete_chunks, client, mock_minio_files
 ):
     """
     Test deletion when multiple objects are associated with a file_id.
@@ -271,6 +276,7 @@ def test_delete_uploaded_file_multiple_objects(
     app.dependency_overrides[get_all_files_orig] = lambda: mock_minio_files
     mock_get_minio.return_value = Mock()
     mock_delete_file.return_value = 3
+    mock_delete_chunks.return_value = 0
 
     response = test_client.delete("/documents/test-file-id-1")
 
@@ -301,5 +307,52 @@ def test_delete_uploaded_file_error(
 
     assert response.status_code == 500
     assert "Error deleting uploaded file" in response.json()["detail"]
+
+    app.dependency_overrides.clear()
+
+
+@patch("src.docarag.api.delete_objects_by_document_name", new_callable=AsyncMock)
+@patch("src.docarag.api.get_minio_client")
+@patch("src.docarag.api.delete_file_by_id")
+def test_delete_uploaded_file_purges_vector_database(
+    mock_delete_file, mock_get_minio, mock_delete_chunks, client, mock_minio_files
+):
+    """
+    Test that deleting a document also removes its chunks from Weaviate.
+    """
+    test_client, app, get_all_files_orig = client
+    app.dependency_overrides[get_all_files_orig] = lambda: mock_minio_files
+    mock_get_minio.return_value = Mock()
+    mock_delete_file.return_value = 1
+    mock_delete_chunks.return_value = 7
+
+    response = test_client.delete("/documents/test-file-id-1")
+
+    assert response.status_code == 200
+    assert "7 chunk(s)" in response.json()["message"]
+
+    mock_delete_chunks.assert_awaited_once_with(
+        DEFAULT_COLLECTION_NAME, "document1.pdf"
+    )
+
+    app.dependency_overrides.clear()
+
+
+@patch("src.docarag.api.delete_objects_by_document_name", new_callable=AsyncMock)
+@patch("src.docarag.api.get_minio_client")
+@patch("src.docarag.api.delete_file_by_id")
+def test_delete_uploaded_file_skips_vector_purge_when_not_found(
+    mock_delete_file, mock_get_minio, mock_delete_chunks, client
+):
+    """
+    Test that a missing document does not reach the vector database.
+    """
+    test_client, app, get_all_files_orig = client
+    app.dependency_overrides[get_all_files_orig] = lambda: []
+
+    response = test_client.delete("/documents/non-existent-id")
+
+    assert response.status_code == 404
+    mock_delete_chunks.assert_not_awaited()
 
     app.dependency_overrides.clear()
