@@ -90,6 +90,8 @@ class RerankerGRPCClient:
         """Async context manager entry."""
         return self
 
-    async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+    async def __aexit__(
+        self, exc_type: object, exc_val: object, exc_tb: object
+    ) -> None:
         """Async context manager exit."""
         await self.close_async()

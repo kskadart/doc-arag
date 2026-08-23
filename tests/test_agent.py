@@ -53,9 +53,7 @@ async def test_rerank_documents_node_reranker_available_returns_reranked_docs():
     mock_service = AsyncMock()
     mock_service.rerank_async.return_value = reranked_docs
 
-    with patch(
-        "src.docarag.services.agent.RerankerService", return_value=mock_service
-    ):
+    with patch("src.docarag.services.agent.RerankerService", return_value=mock_service):
         result = await rerank_documents_node(state)
 
     assert result == {"retrieved_docs": reranked_docs}
@@ -77,9 +75,7 @@ async def test_rerank_documents_node_reranker_unavailable_falls_back_and_warns(
     mock_service.rerank_async.side_effect = grpc.RpcError("reranker unreachable")
 
     with (
-        patch(
-            "src.docarag.services.agent.RerankerService", return_value=mock_service
-        ),
+        patch("src.docarag.services.agent.RerankerService", return_value=mock_service),
         caplog.at_level(logging.WARNING, logger="src.docarag.services.agent"),
     ):
         result = await rerank_documents_node(state)

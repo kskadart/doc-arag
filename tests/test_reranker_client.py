@@ -46,9 +46,7 @@ async def reranker_client(mock_stub):
 @pytest.mark.asyncio
 async def test_rerank_async_returns_scores_in_texts_order(reranker_client, mock_stub):
     """Test that rerank_async returns scores aligned with the input texts order."""
-    scores = await reranker_client.rerank_async(
-        "query", ["first", "second", "third"]
-    )
+    scores = await reranker_client.rerank_async("query", ["first", "second", "third"])
 
     assert scores == [0.2, 0.9, 0.5]
     call_args = mock_stub.Rerank.call_args

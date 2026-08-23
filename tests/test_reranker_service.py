@@ -23,9 +23,7 @@ def reranker_service(mock_grpc_client):
 
 def test_reranker_service_initialization():
     """Test that the reranker service creates a gRPC client when none is provided."""
-    with patch(
-        "src.docarag.services.reranker.RerankerGRPCClient"
-    ) as mock_client_class:
+    with patch("src.docarag.services.reranker.RerankerGRPCClient") as mock_client_class:
         mock_client = Mock()
         mock_client_class.return_value = mock_client
 
