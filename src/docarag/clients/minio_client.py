@@ -143,7 +143,10 @@ def list_all_files(client: Minio, bucket: str) -> list[dict]:
         Exception: If listing fails
     """
     try:
-        files = []
+        files: list[dict] = []
+        # A fresh deployment has no bucket until the first upload creates it
+        if not client.bucket_exists(bucket):
+            return files
         objects = client.list_objects(bucket, recursive=True)
 
         for obj in objects:

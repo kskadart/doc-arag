@@ -356,3 +356,16 @@ def test_delete_uploaded_file_skips_vector_purge_when_not_found(
     mock_delete_chunks.assert_not_awaited()
 
     app.dependency_overrides.clear()
+
+
+def test_list_all_files_returns_empty_when_bucket_missing():
+    """Test that listing a not-yet-created bucket yields an empty list, not a 500."""
+    from unittest.mock import Mock
+
+    from src.docarag.clients.minio_client import list_all_files
+
+    client = Mock()
+    client.bucket_exists.return_value = False
+
+    assert list_all_files(client, "default-documents") == []
+    client.list_objects.assert_not_called()
