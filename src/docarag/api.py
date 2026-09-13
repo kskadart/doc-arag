@@ -29,6 +29,7 @@ from src.docarag.services import (
     process_upload,
     create_default_collection,
     delete_objects_by_document_name,
+    verify_embedding_dimension,
 )
 from src.docarag.consts import DEFAULT_COLLECTION_NAME
 from src.docarag.tasks import run_embedding_task
@@ -41,30 +42,11 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await check_vector_db_connection()
-    # await delete_collection("DefaultDocuments")
     await create_default_collection()
-    # vector_db_service = get_vectorstore_service()
-    # vector_db_service.create_schema(embedding_dimension=embedding_dim)
-
-    # # Initialize embedding service (establishes gRPC connection)
-    # embedding_service = get_embedding_service()
-    # embedding_dim = await embedding_service.get_embedding_dimension_async()
-
-    # # Initialize reranker service
-    # # reranker_service = get_reranker_service()
-    # # reranker_service.load_model()
-
-    # # Initialize vector store schema
-    # vectorstore = get_vectorstore_service()
-    # vectorstore.create_schema(embedding_dimension=embedding_dim)
-
-    # _ = get_rag_agent()
+    if settings.startup_verify_embedding_dimension:
+        await verify_embedding_dimension()
 
     yield
-
-    # # Cleanup
-    # vectorstore.close()
-    # await embedding_service.close_async()
 
 
 app = FastAPI(
@@ -214,7 +196,16 @@ async def generate_embeddings(
 @app.get("/health", response_model=HealthResponse, tags=["Services"])
 async def health_check():
     """Health check endpoint."""
-    return HealthResponse(status="ok", timestamp=datetime.datetime.now(datetime.UTC))
+    return HealthResponse(
+        status="ok",
+        timestamp=datetime.datetime.now(datetime.UTC),
+        llm_provider=settings.llm_provider,
+        llm_model=settings.llm_model
+        if settings.llm_provider == "openai"
+        else settings.anthropic_model,
+        embedding_model=settings.embedding_model,
+        reranker_provider=settings.reranker_provider,
+    )
 
 
 @app.post("/query", response_model=AgentQueryResponse, tags=["Query"])
@@ -225,7 +216,7 @@ async def query_documents_endpoint(request: QueryRequest):
     The agent will:
     1. Understand and rephrase the query
     2. Retrieve relevant documents using vector search
-    3. Generate an answer using Claude
+    3. Generate an answer using the configured LLM
     4. Evaluate and potentially iterate
 
     Returns the agent's generated answer with confidence score and metadata.

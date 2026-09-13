@@ -1,37 +1,27 @@
 """LangGraph RAG agent for multi-step document retrieval and question answering."""
 
 import logging
+import re
 from typing import Any, Literal
 
-import grpc
-from pydantic import BaseModel, Field, SecretStr
-from langchain_anthropic import ChatAnthropic
+from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
+from weaviate.classes.query import Filter, MetadataQuery
 
 from src.docarag.clients.vector_db_client import get_vector_db_client
-from src.docarag.clients.embedding import EmbeddingGRPCClient
 from src.docarag.consts import DEFAULT_COLLECTION_NAME, DEFAULT_DOMAIN
+from src.docarag.errors import RerankerError
 from src.docarag.models.requests import QueryRequest
-from src.docarag.models.responses import AgentQueryResponse
-from src.docarag.services.reranker import RerankerService
+from src.docarag.models.responses import AgentQueryResponse, SourceChunk
+from src.docarag.services.embeddings import get_embedding_service
+from src.docarag.services.llm import get_chat_model
+from src.docarag.services.reranker import get_reranker_service
 from src.docarag.settings import settings
 
 logger = logging.getLogger(__name__)
 
-
-def get_anthropic_client(temperature: float = 0.7) -> ChatAnthropic:
-    """
-    Create a ChatAnthropic client with optional proxy support.
-    """
-    # langchain-anthropic declares its optional "timeout" and "stop" aliases as
-    # Field(None, ...), which type checkers do not read as a default
-    return ChatAnthropic(  # type: ignore[call-arg]
-        model_name=settings.anthropic_model,
-        api_key=SecretStr(settings.anthropic_api_key),
-        temperature=temperature,
-        anthropic_proxy=settings.anthropic_proxy,
-    )
+_NUMBER_PATTERN = re.compile(r"\d+(?:\.\d+)?")
 
 
 class AgentState(BaseModel):
@@ -56,6 +46,9 @@ class AgentState(BaseModel):
     file_id: str | None = Field(
         default=None, description="Optional filter for specific document"
     )
+    domain: str | None = Field(
+        default=None, description="Optional filter on the chunk knowledge domain"
+    )
     max_iterations: int = Field(
         default=2, ge=1, le=5, description="Maximum retry attempts"
     )
@@ -65,14 +58,14 @@ async def rephrase_query_node(state: AgentState) -> dict[str, Any]:
     """
     Rephrase the user query to optimize it for retrieval.
 
-    Uses Claude to reformulate the query for better semantic search results.
+    Uses the configured LLM to reformulate the query for better semantic search results.
     """
     query = state.query
     iterations = state.iterations
 
     logger.info(f"Rephrasing query (iteration {iterations}): {query}")
 
-    llm = get_anthropic_client(temperature=0.3)
+    llm = get_chat_model(0.3)
 
     rephrase_prompt = f"""You are a query optimization assistant. Your task is to rephrase the user's question to make it more effective for semantic search in a document database.
 
@@ -100,12 +93,22 @@ async def embed_query_node(state: AgentState) -> dict[str, Any]:
 
     logger.info(f"Generating embedding for query: {query_text}")
 
-    embedding_client = EmbeddingGRPCClient()
-    query_embedding = await embedding_client.embed_text_async(query_text)
+    query_embedding = await get_embedding_service().embed_text_async(query_text)
 
     logger.info(f"Generated embedding with dimension: {len(query_embedding)}")
 
     return {"query_embedding": query_embedding}
+
+
+def _build_retrieval_filter(file_id: str | None, domain: str | None) -> Any:
+    """Combine the optional document and domain filters, `None` when both are unset."""
+    filters = None
+    if file_id:
+        filters = Filter.by_property("document_name").equal(file_id)
+    if domain:
+        domain_filter = Filter.by_property("domain").equal(domain)
+        filters = domain_filter if filters is None else filters & domain_filter
+    return filters
 
 
 async def retrieve_documents_node(state: AgentState) -> dict[str, Any]:
@@ -113,34 +116,28 @@ async def retrieve_documents_node(state: AgentState) -> dict[str, Any]:
     Retrieve relevant documents from Weaviate using vector similarity search.
     """
     query_embedding = state.query_embedding
-    file_id = state.file_id
+    filters = _build_retrieval_filter(state.file_id, state.domain)
 
-    logger.info(f"Retrieving documents with k={settings.initial_retrieval_k}")
+    logger.info(
+        f"Retrieving documents with k={settings.initial_retrieval_k}"
+        + (f", domain={state.domain}" if state.domain else "")
+        + (f", file_id={state.file_id}" if state.file_id else "")
+    )
 
     async with get_vector_db_client() as client:
         collection = client.collections.get(DEFAULT_COLLECTION_NAME)
 
-        if file_id:
-            logger.info(f"Filtering by file_id: {file_id}")
-            response = await collection.query.near_vector(
-                near_vector=query_embedding,
-                limit=settings.initial_retrieval_k,
-                return_metadata=["distance"],
-                filters={
-                    "path": ["document_name"],
-                    "operator": "Equal",
-                    "valueText": file_id,
-                },
-            )
-        else:
-            response = await collection.query.near_vector(
-                near_vector=query_embedding,
-                limit=settings.initial_retrieval_k,
-                return_metadata=["distance"],
-            )
+        response = await collection.query.near_vector(
+            near_vector=query_embedding,
+            limit=settings.initial_retrieval_k,
+            target_vector="content_vector",
+            return_metadata=MetadataQuery(distance=True),
+            filters=filters,
+        )
 
         retrieved_docs = []
         for obj in response.objects:
+            distance = obj.metadata.distance if obj.metadata else None
             retrieved_docs.append(
                 {
                     "uuid": str(obj.uuid),
@@ -149,10 +146,8 @@ async def retrieve_documents_node(state: AgentState) -> dict[str, Any]:
                     "page": obj.properties.get("page", 0),
                     "domain": obj.properties.get("domain", DEFAULT_DOMAIN),
                     "date_created": obj.properties.get("date_created"),
-                    "distance": obj.metadata.distance if obj.metadata else None,
-                    "similarity_score": 1.0 - obj.metadata.distance
-                    if obj.metadata and obj.metadata.distance
-                    else 0.0,
+                    "distance": distance,
+                    "similarity_score": 1.0 - distance if distance is not None else 0.0,
                 }
             )
 
@@ -163,25 +158,28 @@ async def retrieve_documents_node(state: AgentState) -> dict[str, Any]:
 
 async def rerank_documents_node(state: AgentState) -> dict[str, Any]:
     """
-    Rerank retrieved documents by relevance using the external reranker service.
+    Rerank retrieved documents by relevance using the configured reranker.
 
-    Falls back to the original retrieval order, truncated to `rerank_top_k`, if
-    the reranker service is unavailable or times out, so the pipeline never
+    Falls back to the original retrieval order, truncated to `rerank_top_k`, when
+    the reranker is disabled, unavailable or answers badly, so the pipeline never
     fails on this step.
     """
     query = state.rephrased_query or state.query
     retrieved_docs = state.retrieved_docs
 
+    if settings.reranker_provider == "none":
+        logger.info("Reranker disabled, keeping retrieval order")
+        return {"retrieved_docs": retrieved_docs[: settings.rerank_top_k]}
+
     logger.info(f"Reranking {len(retrieved_docs)} retrieved documents")
 
-    reranker = RerankerService()
     try:
-        reranked_docs = await reranker.rerank_async(
+        reranked_docs = await get_reranker_service().rerank_async(
             query, retrieved_docs, top_k=settings.rerank_top_k
         )
         logger.info(f"Reranked documents, kept top {len(reranked_docs)}")
         return {"retrieved_docs": reranked_docs}
-    except grpc.RpcError as exc:
+    except RerankerError as exc:
         logger.warning(
             f"Reranker service unavailable, falling back to retrieval order: {exc}"
         )
@@ -190,7 +188,7 @@ async def rerank_documents_node(state: AgentState) -> dict[str, Any]:
 
 async def generate_answer_node(state: AgentState) -> dict[str, Any]:
     """
-    Generate an answer using Claude based on the retrieved documents.
+    Generate an answer using the configured LLM based on the retrieved documents.
     """
     query = state.query
     retrieved_docs = state.retrieved_docs
@@ -212,7 +210,7 @@ async def generate_answer_node(state: AgentState) -> dict[str, Any]:
 
     context = "\n".join(context_parts)
 
-    llm = get_anthropic_client(temperature=settings.anthropic_temperature)
+    llm = get_chat_model(settings.llm_temperature)
 
     generation_prompt = f"""You are a helpful AI assistant that answers questions based on the provided document context.
 
@@ -235,6 +233,14 @@ Answer:"""
     return {"answer": answer}
 
 
+def parse_confidence(text: str) -> float | None:
+    """Extract the first number from an evaluator reply and clamp it to [0, 1]."""
+    match = _NUMBER_PATTERN.search(text)
+    if match is None:
+        return None
+    return max(0.0, min(1.0, float(match.group())))
+
+
 async def evaluate_answer_node(state: AgentState) -> dict[str, Any]:
     """
     Evaluate the quality of the generated answer and decide if iteration is needed.
@@ -253,7 +259,7 @@ async def evaluate_answer_node(state: AgentState) -> dict[str, Any]:
             "should_iterate": False,
         }
 
-    llm = get_anthropic_client(temperature=0.1)
+    llm = get_chat_model(0.1)
 
     evaluation_prompt = f"""You are an answer quality evaluator. Assess how well the given answer addresses the user's question.
 
@@ -272,10 +278,8 @@ Confidence Score:"""
 
     response = await llm.ainvoke(evaluation_prompt)
 
-    try:
-        confidence = float(response.text.strip())
-        confidence = max(0.0, min(1.0, confidence))
-    except ValueError:
+    confidence = parse_confidence(response.text)
+    if confidence is None:
         logger.warning(f"Could not parse confidence score: {response.text}")
         confidence = 0.5
 
@@ -350,12 +354,14 @@ async def query_documents(request: QueryRequest) -> AgentQueryResponse:
     initial_state = AgentState(
         query=request.query,
         file_id=None,
+        domain=request.domain,
         max_iterations=request.max_iterations,
     )
 
     agent = build_agent_graph()
 
     final_state = await agent.ainvoke(initial_state)
+    retrieved_docs = final_state.get("retrieved_docs", [])
 
     return AgentQueryResponse(
         query=request.query,
@@ -363,5 +369,19 @@ async def query_documents(request: QueryRequest) -> AgentQueryResponse:
         rephrased_query=final_state.get("rephrased_query"),
         confidence=final_state.get("confidence", 0.0),
         iterations=final_state.get("iterations", 0),
-        sources_used=len(final_state.get("retrieved_docs", [])),
+        sources_used=len(retrieved_docs),
+        sources=[build_source_chunk(doc) for doc in retrieved_docs],
+    )
+
+
+def build_source_chunk(doc: dict[str, Any], snippet_length: int = 200) -> SourceChunk:
+    """Expose a retrieved chunk to API clients without the full content."""
+    score = doc.get("rerank_score", doc.get("similarity_score"))
+    content = str(doc.get("content", ""))
+    return SourceChunk(
+        document_name=str(doc.get("document_name", "")),
+        domain=str(doc.get("domain", DEFAULT_DOMAIN)),
+        page=int(doc.get("page") or 0),
+        score=float(score) if score is not None else None,
+        snippet=content[:snippet_length],
     )

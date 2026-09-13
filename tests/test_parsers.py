@@ -298,10 +298,10 @@ def test_parse_markdown_follows_settings_chunk_size(monkeypatch):
 def test_parse_markdown_warns_when_chunk_exceeds_threshold(monkeypatch, caplog):
     """Test that an oversized chunk is reported instead of silently truncated."""
     monkeypatch.setattr(settings, "md_chunk_size", MD_CHUNK_WARNING_THRESHOLD + 500)
-    body = "word " * 400
+    body = "word " * (MD_CHUNK_WARNING_THRESHOLD // 5 + 50)
     markdown = f"# Title\n\n{body}".encode("utf-8")
 
     with caplog.at_level(logging.WARNING, logger="src.docarag.services.parsers"):
         parse_document(markdown, "text/markdown", chunk_size=512, chunk_overlap=64)
 
-    assert "may be truncated" in caplog.text
+    assert "consider splitting the section" in caplog.text

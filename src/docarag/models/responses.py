@@ -10,6 +10,14 @@ class HealthResponse(BaseModel):
 
     status: str = Field(..., description="Service status")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+    llm_provider: Optional[str] = Field(None, description="Configured LLM provider")
+    llm_model: Optional[str] = Field(None, description="Configured chat model")
+    embedding_model: Optional[str] = Field(
+        None, description="Configured embedding model"
+    )
+    reranker_provider: Optional[str] = Field(
+        None, description="Configured reranker provider"
+    )
 
 
 class UploadResponse(BaseModel):
@@ -66,6 +74,18 @@ class QueryResponse(BaseModel):
     total_results: int = Field(..., description="Total number of results returned")
 
 
+class SourceChunk(BaseModel):
+    """A chunk that was given to the LLM as context."""
+
+    document_name: str = Field(..., description="Document the chunk came from")
+    domain: str = Field(DEFAULT_DOMAIN, description="Knowledge domain of the chunk")
+    page: int = Field(0, description="Page or section ordinal inside the document")
+    score: Optional[float] = Field(
+        None, description="Rerank score when reranked, otherwise vector similarity"
+    )
+    snippet: str = Field("", description="Beginning of the chunk text")
+
+
 class AgentQueryResponse(BaseModel):
     """Response for agent-based RAG query with generated answer."""
 
@@ -83,6 +103,9 @@ class AgentQueryResponse(BaseModel):
         ..., ge=0, description="Number of agent iterations performed"
     )
     sources_used: int = Field(..., description="Number of source documents used")
+    sources: List[SourceChunk] = Field(
+        default_factory=list, description="Chunks used as context, best first"
+    )
 
 
 class DocumentResponse(BaseModel):

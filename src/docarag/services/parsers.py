@@ -184,7 +184,7 @@ def parse_markdown(
             if len(content) > MD_CHUNK_WARNING_THRESHOLD:
                 logger.warning(
                     f"Markdown chunk of {len(content)} characters exceeds "
-                    f"{MD_CHUNK_WARNING_THRESHOLD}, embedding may be truncated"
+                    f"{MD_CHUNK_WARNING_THRESHOLD}, consider splitting the section by headers"
                 )
             documents.append(
                 Document(page_content=content, metadata={"page": section_number})

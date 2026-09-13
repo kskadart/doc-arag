@@ -26,10 +26,10 @@ jobs:
         run: uv sync --frozen --dev
 
       - name: Run ruff linter
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check src/ tests/ scripts/
 
       - name: Run ruff formatter check
-        run: uv run ruff format --check src/ tests/
+        run: uv run ruff format --check src/ tests/ scripts/
 
   typecheck:
     name: Type Check
@@ -49,7 +49,7 @@ jobs:
         run: uv sync --frozen --dev
 
       - name: Run mypy
-        run: uv run mypy src/ tests/
+        run: uv run mypy src/ tests/ scripts/
         continue-on-error: true
 
   test:
@@ -72,8 +72,16 @@ jobs:
       - name: Run tests
         run: uv run pytest tests/ -v --tb=short
         env:
-          ANTHROPIC_API_KEY: test-api-key-123
-          ANTHROPIC_MODEL: claude-3-5-sonnet-20241022
+          LLM_PROVIDER: openai
+          LLM_BASE_URL: http://llm.test/v1
+          LLM_API_KEY: test-llm-key
+          LLM_MODEL: test/chat-model
+          EMBEDDING_BASE_URL: http://embed.test/v1
+          EMBEDDING_API_KEY: test-embed-key
+          EMBEDDING_MODEL: test/embedding-model
+          RERANKER_PROVIDER: grpc
+          RERANKER_SERVICE_URL: localhost:8352
+          STARTUP_VERIFY_EMBEDDING_DIMENSION: "false"
           MINIO_ENDPOINT: localhost:9000
           MINIO_ACCESS_KEY: test-access-key
           MINIO_SECRET_KEY: test-secret-key
@@ -81,6 +89,3 @@ jobs:
           MINIO_SECURE: "false"
           WEAVIATE_HOST: localhost
           WEAVIATE_PORT: "8080"
-          WEAVIATE_COLLECTION: TestDocuments
-          EMBEDDING_SERVICE_URL: localhost:8351
-

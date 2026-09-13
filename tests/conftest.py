@@ -2,8 +2,16 @@ import os
 import sys
 from unittest.mock import Mock
 
-os.environ.setdefault("ANTHROPIC_API_KEY", "test-api-key-123")
-os.environ.setdefault("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022")
+os.environ.setdefault("LLM_PROVIDER", "openai")
+os.environ.setdefault("LLM_BASE_URL", "http://llm.test/v1")
+os.environ.setdefault("LLM_API_KEY", "test-llm-key")
+os.environ.setdefault("LLM_MODEL", "test/chat-model")
+os.environ.setdefault("EMBEDDING_BASE_URL", "http://embed.test/v1")
+os.environ.setdefault("EMBEDDING_API_KEY", "test-embed-key")
+os.environ.setdefault("EMBEDDING_MODEL", "test/embedding-model")
+os.environ.setdefault("RERANKER_PROVIDER", "grpc")
+os.environ.setdefault("RERANKER_SERVICE_URL", "localhost:8352")
+os.environ.setdefault("STARTUP_VERIFY_EMBEDDING_DIMENSION", "false")
 os.environ.setdefault("MINIO_ENDPOINT", "localhost:9000")
 os.environ.setdefault("MINIO_ACCESS_KEY", "test-access-key")
 os.environ.setdefault("MINIO_SECRET_KEY", "test-secret-key")
@@ -11,8 +19,6 @@ os.environ.setdefault("MINIO_BUCKET", "test-bucket")
 os.environ.setdefault("MINIO_SECURE", "false")
 os.environ.setdefault("WEAVIATE_HOST", "localhost")
 os.environ.setdefault("WEAVIATE_PORT", "8080")
-os.environ.setdefault("WEAVIATE_COLLECTION", "TestDocuments")
-os.environ.setdefault("EMBEDDING_SERVICE_URL", "localhost:8351")
 
 mock_rag_agent_module = Mock()
 mock_rag_agent_module.get_rag_agent = Mock()

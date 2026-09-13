@@ -2,15 +2,18 @@ import logging
 from typing import Any
 
 from weaviate.classes.config import Configure
+from weaviate.classes.data import DataObject
 from weaviate.classes.query import Filter
 from weaviate.collections.classes.config import CollectionConfig
 from weaviate.collections.classes.grpc import MetadataQuery
 from weaviate.exceptions import WeaviateInsertManyAllFailedError
 
 from src.docarag.clients import get_vector_db_client
-from src.docarag.clients.embedding import EmbeddingGRPCClient
 from src.docarag.consts import DEFAULT_COLLECTION_NAME, DEFAULT_DOMAIN
+from src.docarag.errors import EmbeddingError
 from src.docarag.models.responses import VectorSearchResponse, VectorSearchResult
+from src.docarag.services.embeddings import get_embedding_service
+from src.docarag.settings import settings
 from src.docarag.utils.default_collection_conf import (
     DEFAULT_COLLECTION_DESCRIPTION,
     DEFAULT_COLLECTION_PROPERTIES,
@@ -43,6 +46,58 @@ async def create_default_collection() -> None:
             ),
         )
         logger.info(f"Collection {collection_name} created successfully")
+
+
+async def recreate_default_collection() -> None:
+    """Drop the default collection (if any) and create it again with the current schema."""
+    await delete_collection(DEFAULT_COLLECTION_NAME)
+    await create_default_collection()
+
+
+async def verify_embedding_dimension() -> int | None:
+    """
+    Compare the live embedding dimension with the vectors already stored.
+
+    Returns:
+        The probed dimension, `None` when the embedding endpoint is unreachable
+        (the API must still boot for uploads and listings to work)
+
+    Raises:
+        RuntimeError: If stored vectors have a different dimension than the
+            configured embedding model produces, i.e. the collection must be
+            recreated before any new insert or query can succeed
+    """
+    try:
+        probed = await get_embedding_service().get_embedding_dimension_async()
+    except (EmbeddingError, ValueError) as exc:
+        logger.warning(
+            f"Embedding endpoint unavailable, skipping dimension check: {exc}"
+        )
+        return None
+
+    if not await is_collection_exists(DEFAULT_COLLECTION_NAME):
+        logger.info(f"Embedding dimension {probed}, collection not created yet")
+        return probed
+
+    async with get_vector_db_client() as client:
+        collection = client.collections.get(DEFAULT_COLLECTION_NAME)
+        response = await collection.query.fetch_objects(
+            limit=1, include_vector=["content_vector"]
+        )
+
+    if not response.objects:
+        logger.info(f"Embedding dimension {probed}, collection is empty")
+        return probed
+
+    stored = len(response.objects[0].vector["content_vector"])
+    if stored != probed:
+        raise RuntimeError(
+            f"Stored vectors have dimension {stored} but embedding model "
+            f"'{settings.embedding_model}' produces {probed}; recreate the "
+            f"collection (scripts.load_corpus --recreate) before continuing"
+        )
+    logger.info(f"Embedding dimension {probed} matches stored vectors")
+    return probed
 
 
 async def create_collection_from_config(collection_config: CollectionConfig) -> None:
@@ -100,41 +155,44 @@ async def delete_objects_by_document_name(
 async def add_batch_objects(
     collection_name: str, content_list: list[dict[str, Any]]
 ) -> None:
+    """
+    Insert chunk objects with their named vector using Weaviate batch inserts.
+
+    Raises:
+        ValueError: If the collection does not exist (a silent no-op here would
+            let the embedding task report success with nothing stored)
+        WeaviateInsertManyAllFailedError: If any object in a batch is rejected
+    """
     if not await is_collection_exists(collection_name):
-        logger.info(f"Collection {collection_name} does not exist")
+        raise ValueError(f"Collection '{collection_name}' does not exist")
+
+    if not content_list:
+        logger.info(f"Nothing to insert into collection {collection_name}")
         return
 
     async with get_vector_db_client() as client:
         collection = client.collections.get(collection_name)
 
-        # Insert objects one by one using the async API
-        failed_count = 0
-        for obj in content_list:
-            try:
-                properties: dict[str, Any] = obj["properties"]
-                vector: dict[str, list[float]] = obj["vector"]
-
-                await collection.data.insert(
-                    properties=properties,
-                    vector=vector,
+        batch_size = settings.weaviate_insert_batch_size
+        inserted = 0
+        for start in range(0, len(content_list), batch_size):
+            batch = content_list[start : start + batch_size]
+            objects = [
+                DataObject(properties=obj["properties"], vector=obj["vector"])
+                for obj in batch
+            ]
+            result = await collection.data.insert_many(objects)
+            if result.has_errors:
+                first_error = next(iter(result.errors.values()))
+                raise WeaviateInsertManyAllFailedError(
+                    f"Failed to add {len(result.errors)} of {len(batch)} objects to "
+                    f"collection '{collection_name}': {first_error.message}"
                 )
-            except Exception as e:
-                logger.error(f"Failed to insert object: {str(e)}")
-                failed_count += 1
-                if failed_count > 3:
-                    logger.error("Too many errors, stopping batch insert.")
-                    raise WeaviateInsertManyAllFailedError(
-                        f"Failed to add batch objects to collection '{collection_name}': {failed_count} failures"
-                    )
+            inserted += len(batch)
 
-        if failed_count > 0:
-            logger.warning(
-                f"Completed with {failed_count} failures out of {len(content_list)} objects"
-            )
-        else:
-            logger.info(
-                f"Successfully added {len(content_list)} vectors to collection {collection_name}"
-            )
+        logger.info(
+            f"Successfully added {inserted} vectors to collection {collection_name}"
+        )
 
 
 async def find_nearest_vectors(
@@ -164,9 +222,8 @@ async def find_nearest_vectors(
         f"Searching for nearest vectors in collection '{collection_name}' with query: '{query[:100]}...'"
     )
 
-    async with EmbeddingGRPCClient() as embedding_client:
-        query_vector = await embedding_client.embed_text_async(query)
-        logger.debug(f"Generated query embedding with dimension: {len(query_vector)}")
+    query_vector = await get_embedding_service().embed_text_async(query)
+    logger.debug(f"Generated query embedding with dimension: {len(query_vector)}")
 
     async with get_vector_db_client() as client:
         collection = client.collections.use(collection_name)
