@@ -168,6 +168,9 @@ def validate_records(records: list[dict[str, Any]], corpus_root: Path) -> list[s
         if not source.is_file():
             problems.append(f"{origin} ({rid}): source not found: {record['source']}")
             continue
+        for alt in record.get("alt_sources", []) or []:
+            if not (corpus_root / str(alt)).is_file():
+                problems.append(f"{origin} ({rid}): alt source not found: {alt}")
         if source.parent.name != record["domain"]:
             problems.append(
                 f"{origin} ({rid}): domain {record['domain']!r} != directory {source.parent.name!r}"
@@ -211,7 +214,9 @@ def score_record(
     answer = str(result.get("answer", ""))
     lowered = answer.lower()
     sources = list(result.get("sources", []))[:k]
-    source_name = Path(str(record["source"])).name
+    accepted_names = {Path(str(record["source"])).name} | {
+        Path(str(alt)).name for alt in record.get("alt_sources", []) or []
+    }
 
     found = [f for f in record["must_include"] if str(f).lower() in lowered]
     found_lenient = [
@@ -227,7 +232,7 @@ def score_record(
         t for t in tokens if t.lower() not in CURRENCY_TOKENS and t.lower() in lowered
     ]
     return {
-        "doc_hit": any(s.get("document_name") == source_name for s in sources),
+        "doc_hit": any(s.get("document_name") in accepted_names for s in sources),
         "domain_hit": any(s.get("domain") == record["domain"] for s in sources),
         "fact_coverage": len(found) / len(record["must_include"]),
         "fact_coverage_lenient": len(found_lenient) / len(record["must_include"]),

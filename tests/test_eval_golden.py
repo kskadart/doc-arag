@@ -235,3 +235,17 @@ def test_lenient_fact_match_survives_case_endings():
     assert scores["fact_coverage"] == 0.0
     assert scores["fact_coverage_lenient"] == 1.0
     assert scores["facts_missing"] == []
+
+
+def test_alt_sources_count_as_doc_hit_and_are_validated(corpus: Path):
+    record = _record(alt_sources=["diagnostics/other.md"])
+    result = {
+        "answer": "x",
+        "sources": [{"document_name": "other.md", "domain": "diagnostics"}],
+    }
+    assert eval_golden.score_record(record, result, k=5)["doc_hit"] is True
+
+    problems = eval_golden.validate_records([record], corpus)
+    assert problems == [
+        "parts/x.jsonl:1 (diag-001): alt source not found: diagnostics/other.md"
+    ]
