@@ -163,7 +163,7 @@ def test_aggregate_and_render():
     assert stats["judge"] == 5
 
     report = eval_golden.render_markdown({"run_at": "now", "llm_model": "m"}, rows, k=5)
-    assert "| **all** | 2 | 50% | 100% | 75% | 1 |" in report
+    assert "| **all** | 2 | 50% | 100% | 75% | 75% | 1 |" in report
     assert "type=negative" in report and "❌ руб" in report
 
 
@@ -217,3 +217,21 @@ def test_currency_forbidden_requires_an_amount():
 
     with_name = {"answer": "Расчёты ведёт Иванова.", "sources": []}
     assert eval_golden.score_record(record, with_name, k=5)["forbidden"] == ["Иванова"]
+
+
+def test_lenient_fact_match_survives_case_endings():
+    assert eval_golden.fact_in_text_lenient(
+        "наклейка с серийным номером", "нанесены на наклейку с серийным номером и MAC"
+    )
+    assert eval_golden.fact_in_text_lenient("дежурному ЦУС", "позвонить дежурному цус")
+    assert not eval_golden.fact_in_text_lenient(
+        "дежурному ЦУС", "дежурный инженер и ЦУС"
+    )
+    scores = eval_golden.score_record(
+        _record(must_include=["модуль PPPoE", "вкладке Логи"]),
+        {"answer": "Смотрим модуля PPPoE, вкладка Логи.", "sources": []},
+        k=5,
+    )
+    assert scores["fact_coverage"] == 0.0
+    assert scores["fact_coverage_lenient"] == 1.0
+    assert scores["facts_missing"] == []

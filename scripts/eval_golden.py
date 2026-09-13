@@ -37,6 +37,29 @@ DEFAULT_CORPUS = Path("/Users/kskada/develop/oreo-data/corpus")
 DEFAULT_API_URL = "http://localhost:8103"
 DEFAULT_OUT_DIR = Path(".claude/reports")
 RECORD_TYPES = {"factual", "procedural", "paraphrase", "cross-doc", "negative"}
+_WORD_RE = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
+STEM_LENGTH = 5
+
+
+def _stems(text: str) -> list[str]:
+    """Crude Russian stemming: lowercase words cut to STEM_LENGTH characters (numbers kept whole)."""
+    return [
+        w if w.isdigit() else w[:STEM_LENGTH] for w in _WORD_RE.findall(text.lower())
+    ]
+
+
+def fact_in_text_lenient(fact: str, text: str) -> bool:
+    """True when the fact's word stems appear in order (contiguously) in the text — survives case endings."""
+    fact_stems = _stems(fact)
+    if not fact_stems:
+        return False
+    text_stems = _stems(text)
+    n = len(fact_stems)
+    return any(
+        text_stems[i : i + n] == fact_stems for i in range(len(text_stems) - n + 1)
+    )
+
+
 # A forbidden currency word counts only next to a number: "в рублях" is not a leak
 CURRENCY_TOKENS = ("руб", "рубл", "₽", "р.")
 PRICE_PATTERN = re.compile(r"\d[\d\s.,]*\s?(руб|₽|р\.)", re.IGNORECASE)
@@ -191,6 +214,9 @@ def score_record(
     source_name = Path(str(record["source"])).name
 
     found = [f for f in record["must_include"] if str(f).lower() in lowered]
+    found_lenient = [
+        f for f in record["must_include"] if fact_in_text_lenient(str(f), answer)
+    ]
     forbidden: list[str] = []
     tokens = [str(t) for t in record.get("must_not_include", [])]
     if any(t.lower() in CURRENCY_TOKENS for t in tokens):
@@ -204,7 +230,8 @@ def score_record(
         "doc_hit": any(s.get("document_name") == source_name for s in sources),
         "domain_hit": any(s.get("domain") == record["domain"] for s in sources),
         "fact_coverage": len(found) / len(record["must_include"]),
-        "facts_missing": [f for f in record["must_include"] if f not in found],
+        "fact_coverage_lenient": len(found_lenient) / len(record["must_include"]),
+        "facts_missing": [f for f in record["must_include"] if f not in found_lenient],
         "forbidden": forbidden,
         "confidence": float(result.get("confidence", 0.0)),
         "sources_used": int(result.get("sources_used", 0)),
@@ -271,6 +298,9 @@ def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "doc_hit": sum(r["doc_hit"] for r in rows) / len(rows),
         "domain_hit": sum(r["domain_hit"] for r in rows) / len(rows),
         "fact_coverage": statistics.mean(r["fact_coverage"] for r in rows),
+        "fact_coverage_lenient": statistics.mean(
+            r.get("fact_coverage_lenient", r["fact_coverage"]) for r in rows
+        ),
         "forbidden": sum(1 for r in rows if r["forbidden"]),
         "confidence": statistics.mean(r["confidence"] for r in rows),
         "judge": statistics.mean(judged) if judged else None,
@@ -281,12 +311,16 @@ def _fmt(stats: dict[str, Any]) -> str:
     judge = f"{stats['judge']:.2f}" if stats.get("judge") is not None else "—"
     return (
         f"| {stats['n']} | {stats['doc_hit']:.0%} | {stats['domain_hit']:.0%} | "
-        f"{stats['fact_coverage']:.0%} | {stats['forbidden']} | {stats['confidence']:.2f} | {judge} |"
+        f"{stats['fact_coverage']:.0%} | {stats['fact_coverage_lenient']:.0%} | "
+        f"{stats['forbidden']} | {stats['confidence']:.2f} | {judge} |"
     )
 
 
 def render_markdown(config: dict[str, Any], rows: list[dict[str, Any]], k: int) -> str:
-    header = "| group | n | doc_hit@k | domain_hit@k | facts | forbidden | conf | judge |\n|---|---|---|---|---|---|---|---|"
+    header = (
+        "| group | n | doc_hit@k | domain_hit@k | facts | facts~ | forbidden | conf | judge |\n"
+        "|---|---|---|---|---|---|---|---|---|"
+    )
     lines = [
         f"# Golden set — {config.get('run_at')}",
         "",
@@ -535,7 +569,8 @@ def main(argv: list[str] | None = None) -> int:
     summary = aggregate(rows)
     logger.info(
         f"doc_hit={summary['doc_hit']:.0%} domain_hit={summary['domain_hit']:.0%} "
-        f"facts={summary['fact_coverage']:.0%} forbidden={summary['forbidden']} "
+        f"facts={summary['fact_coverage']:.0%} facts~={summary['fact_coverage_lenient']:.0%} "
+        f"forbidden={summary['forbidden']} "
         f"judge={summary['judge'] if summary['judge'] is not None else '—'} report: {out}"
     )
     return 1 if summary["forbidden"] else 0
