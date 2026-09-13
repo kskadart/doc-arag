@@ -26,3 +26,5 @@ services:
       - RERANKER_BASE_URL=${RERANKER_BASE_URL:-http://host.docker.internal:8083/v1}
       - RERANKER_API_KEY=${RERANKER_API_KEY:-EMPTY}
       - RERANKER_MODEL=${RERANKER_MODEL:-qwen3-reranker-8b}
+      # Local models are fast enough to feed the generator more context
+      - RERANK_TOP_K=${RERANK_TOP_K:-8}
