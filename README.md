@@ -1,315 +1,167 @@
-# Agentic RAG Service
+# doc-arag — Agentic RAG Service
 
-An intelligent document processing and retrieval system using LangGraph, Weaviate, and Claude AI.
-
-## Features
-
-- **Document Processing**: Parse PDF and Markdown files
-- **Domain Attribution**: Tag every chunk with the knowledge domain of its document
-- **Idempotent Embedding**: Re-embedding a document replaces its chunks instead of duplicating them
-- **Vector Search**: Store and retrieve document embeddings using Weaviate
-- **External Embeddings**: EmbeddingGemma served over gRPC by the `rag-services` stack
-- **Reranking**: Cross-encoder reranking of the retrieved candidates over gRPC, with
-  graceful fallback to the retrieval order when the reranker service is unavailable
-- **Agentic RAG**: Intelligent query processing with a LangGraph agent
-- **Background Processing**: Async document processing with FastAPI background tasks
-- **S3 Storage**: Store original documents in MinIO (S3-compatible)
-
-Not implemented yet: DOCX parsing (`services/parsers.py`) and web scraping (`POST /scrappings`).
+Document ingestion and question answering over a private corpus: FastAPI + LangGraph + Weaviate + MinIO. Models are pluggable per component through environment variables: chat, embeddings and rerank all speak the OpenAI / Cohere-style HTTP contracts, so the same code runs against OpenRouter (default: `qwen/qwen3.8-flash`, `qwen/qwen3-embedding-8b`, `qwen/qwen3-reranker-8b`) or a local llama.cpp stack (`compose.models.yml`) with the open Qwen weights.
 
 ## Architecture
 
-### Components
+- **FastAPI** (`src/docarag/api.py`) — REST API on `:8103`.
+- **MinIO** — stores the original documents (`file_id/filename`, `domain` in object metadata).
+- **Weaviate 1.39** — one collection `DefaultDocuments`, named vector `content_vector`, properties `document_name`, `page`, `content`, `domain`, `date_created`.
+- **LangGraph agent** (`services/agent.py`) — rephrase → embed → retrieve (k=20, optional `domain` filter) → rerank (graceful fallback) → generate → evaluate (threshold 0.7, up to `max_iterations`).
+- **Providers** — `services/llm.py` (chat), `clients/embedding_http.py` (embeddings), `clients/reranker_http.py` / `clients/reranker_client.py` (reranker), all selected in `settings.py`.
 
-- **FastAPI**: REST API server
-- **MinIO**: S3-compatible object storage for documents
-- **Weaviate**: Vector database for embeddings, single collection `DefaultDocuments`
-- **EmbeddingGemma (300M)**: Embedding generation over gRPC, 256 dimensions
-- **Reranker service**: Cross-encoder reranking over gRPC, external service from the
-  `rag-services` stack, optional (see Agent Workflow)
-- **LangGraph**: Agent workflow orchestration
-- **Claude**: LLM for answer generation, model chosen by `ANTHROPIC_MODEL`
+### Ingestion pipeline
 
-### Ingestion Pipeline
+1. `POST /uploads` (multipart: `document_name`, `domain`, `document` file) → MinIO. Supported: PDF, Markdown (`text/markdown` / `text/plain`); DOCX is accepted but not parsed yet.
+2. `POST /embeddings/{file_id}` → background task: parse → chunk → embed → purge previous chunks of the same `document_name` → `insert_many` into Weaviate.
+3. `GET /tasks/{task_id}` → `processing` / `completed` / `failed`.
 
-Uploading is a two-step process: the file lands in storage first, embedding is a
-separate background task tracked by its own task id.
-
-```mermaid
-flowchart LR
-    A[POST /uploads] --> B[MinIO<br/>file + domain metadata]
-    B --> C[POST /embeddings/id]
-    C --> D[Background task]
-    D --> E[Parse into chunks]
-    E --> F[Embed via gRPC]
-    F --> G[Purge previous chunks]
-    G --> H[Weaviate insert]
-    D -.progress.-> I[GET /tasks/id]
-```
-
-### Agent Workflow
-
-1. **Rephrase Query**: Reformulate the question for semantic search
-2. **Embed Query**: Turn the rephrased question into a vector
-3. **Retrieve**: Get top-k candidates from Weaviate (`INITIAL_RETRIEVAL_K`)
-4. **Rerank**: Score the candidates against the query with the reranker service and
-   keep the top `RERANK_TOP_K`. If the reranker service is unavailable or times out,
-   this step logs a warning and falls back to the first `RERANK_TOP_K` candidates
-   in retrieval order, so a missing reranker never fails the pipeline
-5. **Generate**: Create an answer using Claude with the reranked context
-6. **Evaluate**: Score the answer and iterate while it stays below the confidence threshold
-
-### Chunking
-
-| Format | Content types | Splitting | Sizes |
-|---|---|---|---|
-| PDF | `application/pdf` | per page, then `RecursiveCharacterTextSplitter` | `CHUNK_SIZE` / `CHUNK_OVERLAP` |
-| Markdown | `text/markdown`, `text/plain` | per h1-h3 header, oversized sections split further | `MD_CHUNK_SIZE` / `MD_CHUNK_OVERLAP` |
-
-Markdown chunks are built to survive retrieval on their own: YAML frontmatter is
-dropped, every chunk is prefixed with the breadcrumb of its section (`H1 > H2`)
-and `page` holds the section number. Markdown deliberately ignores the caller
-supplied `chunk_size` and reads `MD_CHUNK_SIZE` from the settings, because header
-scoped sections need a larger budget than a page slice. A chunk larger than 1500
-characters is logged as a warning: the embedding service silently truncates
-anything above 512 tokens.
+Markdown is split by headers (`#`, `##`, `###`), each chunk carries a `H1 > H2 > H3` breadcrumb, YAML front-matter is dropped, `page` is the section ordinal. Oversized sections are sub-split at `MD_CHUNK_SIZE` (1800 chars).
 
 ## Prerequisites
 
-- Docker and Docker Compose
-- Python 3.13
-- uv (Python package manager)
+- Docker Desktop (Weaviate + MinIO run in compose)
+- Python 3.13 and `uv` (`brew install uv`)
+- `libmagic` for MIME detection (`brew install libmagic` on macOS)
+- Either an OpenRouter key (`OPENROUTER_API_KEY`, used for chat, embeddings and rerank) or the local model stack below
 
-## Installation
-
-1. **Install dependencies**:
-   ```bash
-   uv sync
-   ```
-
-2. **Set environment variables**:
-   - Copy `env.example` and fill in `ANTHROPIC_API_KEY` and the MinIO credentials
-   - `Settings` uses `extra="forbid"`, so a local `.env` must not contain the
-     compose-only block of `env.example`
-
-## Running the Application
-
-### Using Docker Compose (Recommended)
+## Setup
 
 ```bash
-docker compose up --build
+uv sync
+cp env.example .env    # then edit: keep ONLY keys that exist in src/docarag/settings.py
+docker compose up -d   # api + weaviate + minio
+curl http://localhost:8103/health
 ```
 
-This will start:
-- FastAPI application on `http://localhost:8103`
-- MinIO console on `http://localhost:9001`
-- Weaviate on `http://localhost:8080`
+`Settings` is `extra="forbid"`: an unknown key in `.env` aborts startup. The compose-only keys at the top of `env.example` (`MINIO_ROOT_*`) must not be in the application `.env`.
 
-The embedding service comes from the `rag-services` stack and joins over the
-shared `arag-common-network` network.
+### Choosing models
 
-### Local Development
+| Component | Setting | Default | Alternatives |
+|---|---|---|---|
+| Chat | `LLM_PROVIDER=openai`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` | OpenRouter, `qwen/qwen3.8-flash` | local llama.cpp / Ollama / vLLM, `LLM_PROVIDER=anthropic` |
+| Embeddings | `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL` | OpenRouter, `qwen/qwen3-embedding-8b` (4096 dims) | any `/v1/embeddings` server; `EMBEDDING_DIMENSIONS` when the model supports it |
+| Reranker | `RERANKER_PROVIDER=openai-rerank\|grpc\|none` | OpenRouter, `qwen/qwen3-reranker-8b` | llama.cpp / vLLM / Jina `/v1/rerank`, rag-services gRPC, or `none` |
+
+`OPENROUTER_API_KEY` fills the key of every component whose base URL is OpenRouter; a component-specific `*_API_KEY` overrides it.
+
+### Local model stack (macOS, llama.cpp on Metal)
+
+Docker Desktop cannot expose the Apple GPU to Linux containers (Docker's GPU support exists only on Windows/WSL2), so on a Mac the model servers run natively and the api container reaches them through `host.docker.internal`:
 
 ```bash
-# Ensure services are running (MinIO, Weaviate)
-docker compose up minio weaviate -d
-
-# Run the application
-uv run fastapi dev src/docarag/main.py --host 0.0.0.0 --port 8103
+brew install llama.cpp
+scripts/local_models.sh start        # chat Qwen3.8-27B :8081, Qwen3-Embedding-8B :8082, Qwen3-Reranker-8B :8083 (weights pulled from Hugging Face into ~/.cache/huggingface/hub)
+scripts/local_models.sh status
+docker compose -f compose.yml -f compose.models.yml up -d
 ```
 
-## API Endpoints
+Same OpenAI / `/v1/rerank` contracts as OpenRouter, so `.env` is the only difference between local testing and API deployment. Override weights with `LLM_HF_REPO`, `EMBEDDING_HF_REPO`, `RERANKER_HF_REPO` (`repo:quant`). Qwen3.8-Flash is closed-weight; Qwen3.8-27B is the open counterpart.
 
-### Health Check
-```http
-GET /health
-```
-
-### Upload Document
-```http
-POST /uploads
-Content-Type: multipart/form-data
-
-document_name: <name stored as document_name of every chunk>
-document: <PDF or MD file>
-domain: <slug, defaults to "general">
-```
-
-Either `document` or `document_url` must be provided, not both. `domain` must
-match `^[a-z0-9][a-z0-9-]*$`. Keep `document_name` in latin characters: it
-travels as an S3 metadata header.
-
-### Generate Embeddings
-```http
-POST /embeddings/{file_id}
-```
-
-Starts a background task and returns its `task_id`. Chunks of the document that
-are already in the vector database are purged before the new ones are written,
-so running this twice does not duplicate vectors.
-
-### Get Task Status
-```http
-GET /tasks/{task_id}
-```
-
-### Query Documents
-```http
-POST /query
-Content-Type: application/json
-
-{
-  "query": "What is the main topic?",
-  "max_iterations": 2
-}
-```
-
-### List Documents
-```http
-GET /documents?page=1&page_size=10
-```
-
-### Delete Document
-```http
-DELETE /documents/{file_id}
-```
-
-Removes the objects from MinIO and every chunk embedded from them from Weaviate.
-
-## Configuration
-
-Settings are managed in `src/docarag/settings.py` using Pydantic Settings, see
-`env.example` for the full list. Key options:
-
-- `ANTHROPIC_API_KEY`: Claude API key
-- `ANTHROPIC_MODEL`: Model name used by every agent node
-- `EMBEDDING_SERVICE_URL`: gRPC endpoint of the embedding service
-- `CHUNK_SIZE` / `CHUNK_OVERLAP`: PDF chunking (default: 512 / 64)
-- `MD_CHUNK_SIZE` / `MD_CHUNK_OVERLAP`: Markdown chunking (default: 900 / 100)
-- `INITIAL_RETRIEVAL_K`: Initial retrieval count (default: 20)
-- `RERANKER_SERVICE_URL`: gRPC endpoint of the reranker service (default: `reranker-service:8352`)
-- `RERANKER_TIMEOUT`: Reranker gRPC call timeout in seconds (default: 30)
-- `RERANK_TOP_K`: Documents kept after reranking (default: 5)
-- `AGENT_CONFIDENCE_THRESHOLD`: Score below which the agent iterates (default: 0.7)
-
-## Testing
+### GPU server stack (Linux + NVIDIA, SGLang)
 
 ```bash
-make tests
-make linter
-make typecheck
+docker compose -f compose.yml -f compose.sglang.yml up -d
 ```
 
-## Project Structure
+Three `lmsysorg/sglang` containers (chat, `--is-embedding` embeddings, decoder-only Qwen3 reranker with its yes/no chat template). SGLang's `/v1/rerank` answers with a bare list of `{index, score}`; the reranker client accepts that dialect as well as the `results[{index, relevance_score}]` one.
 
-```
-src/docarag/
-├── api.py                  # FastAPI endpoints
-├── main.py                 # Entry point
-├── settings.py             # Configuration
-├── consts.py               # MIME types, collection name, domain rules
-├── dependencies.py         # FastAPI dependencies
-├── task_progress.py        # In-memory background task status
-├── embedding_pb2.py        # Generated gRPC stubs of the embedding service
-├── embedding_pb2_grpc.py
-├── reranker_pb2.py         # Generated gRPC stubs of the reranker service
-├── reranker_pb2_grpc.py
-├── clients/                # External systems
-│   ├── minio_client.py     # MinIO S3 client
-│   ├── vector_db_client.py # Weaviate client
-│   ├── embedding.py        # Embedding service gRPC client
-│   └── reranker_client.py  # Reranker service gRPC client
-├── models/                 # Pydantic models
-│   ├── requests.py
-│   ├── responses.py
-│   └── upload.py
-├── services/               # Core services
-│   ├── uploader.py         # Upload flow and MIME detection
-│   ├── parsers.py          # PDF and Markdown parsing
-│   ├── embeddings.py       # Embedding service wrapper
-│   ├── reranker.py         # Reranker service wrapper
-│   ├── vector_db.py        # Weaviate collections and search
-│   ├── agent.py            # LangGraph agent
-│   ├── storage.py          # Not wired into the API
-│   └── scraper.py          # Not wired into the API
-├── tasks/
-│   └── embedding_task.py   # Background embedding pipeline
-└── utils/
-    └── default_collection_conf.py  # Property layout of the collection
-```
-
-The gRPC stubs are generated ad-hoc and committed; regenerate them from `proto/`
-with (pin `grpcio-tools`/`protobuf` to the versions locked in `uv.lock` for the
-project's `grpcio`/`protobuf`, otherwise the generated gencode may require a
-newer runtime than what is installed and fail to import):
+## Loading a corpus
 
 ```bash
-uv run --with "grpcio-tools==1.78.0" --with "protobuf==6.33.6" python -m grpc_tools.protoc -I proto \
-  --python_out=src/docarag --grpc_python_out=src/docarag proto/embedding.proto
-
-uv run --with "grpcio-tools==1.78.0" --with "protobuf==6.33.6" python -m grpc_tools.protoc -I proto \
-  --python_out=src/docarag --grpc_python_out=src/docarag proto/reranker.proto
+uv run python -m scripts.load_corpus --dry-run                 # chunk report, no services or keys needed
+uv run python -m scripts.load_corpus --recreate --only diagnostics/internet-check-procedure.md
+uv run python -m scripts.load_corpus                           # whole corpus, skips already uploaded files
+uv run python -m scripts.load_corpus --force                   # delete + re-upload
 ```
 
-Both generated `*_pb2_grpc.py` files import their sibling `*_pb2` module by the
-project's full package path (e.g. `import src.docarag.reranker_pb2 as reranker__pb2`)
-so they resolve under `src.docarag.*`; `protoc` emits a bare `import reranker_pb2`,
-so that one import line needs a manual fix-up after regenerating.
+The loader walks `<corpus>/<domain>/*.md`, sends `domain` = directory name, waits for each embedding task and fails unless the Weaviate object count grows. Directories starting with `_` and `EXCLUSIONS.md` are skipped; file names must be latin.
 
-`grpcio-tools` is pulled in on demand via `--with`, it is not part of the locked
-dependencies; `protobuf` is locked (it is a transitive dependency of `grpcio`),
-the `--with` pin above only keeps the ephemeral `protoc` run in sync with it.
+## Evaluating models
+
+```bash
+uv run python -m scripts.run_control_questions                 # 12 built-in questions → .claude/reports/
+uv run python -m scripts.run_control_questions --questions my.json --use-domain-filter
+```
+
+The report stores the configuration reported by `GET /health` (`llm_model`, `embedding_model`, `reranker_provider`), so runs with different `.env` values can be compared. Comparing chat models: change `LLM_MODEL`, restart the api, rerun. Comparing embedders: also `load_corpus --recreate`.
+
+### Golden set
+
+The golden set lives next to the corpus (`oreo-data/golden/`, schema in its README): question, reference answer, source file and section, `must_include` facts that are verified to exist in the source, `must_not_include` strings, record type (factual / procedural / paraphrase / cross-doc / negative).
+
+```bash
+uv run python -m scripts.eval_golden --validate                        # parts/*.jsonl → golden-set.jsonl, checked against the corpus
+uv run python -m scripts.eval_golden                                   # doc_hit@k, domain_hit@k, fact coverage, forbidden strings
+uv run python -m scripts.eval_golden --domain diagnostics --use-domain-filter
+uv run python -m scripts.eval_golden --judge --judge-model qwen/qwen3.7-plus   # + LLM grade 1-5 against the reference
+```
+
+`POST /query` returns the chunks used as context in `sources` (document, domain, section ordinal, score, snippet), which is what the retrieval metrics are computed from.
+
+## API
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/health` | status + configured models |
+| `POST` | `/uploads` | multipart upload (`document_name`, `domain`, `document` or `document_url`) |
+| `POST` | `/embeddings/{file_id}` | start the embedding task |
+| `GET` | `/tasks/{task_id}` | task progress |
+| `GET` | `/documents?page=&page_size=` | list uploaded documents |
+| `DELETE` | `/documents/{file_id}` | delete from MinIO and Weaviate |
+| `POST` | `/query` | `{"query": "...", "domain": "diagnostics" \| null, "max_iterations": 2}` |
+
+`domain` in `/query` is an optional chunk filter; an empty value or the legacy collection name `DefaultDocuments` means no filter.
+
+```bash
+curl -X POST http://localhost:8103/uploads \
+  -F "document_name=internet-check-procedure.md" -F "domain=diagnostics" \
+  -F "document=@corpus/diagnostics/internet-check-procedure.md;type=text/markdown"
+
+curl -X POST http://localhost:8103/query -H "Content-Type: application/json" \
+  -d '{"query": "У абонента не работает интернет — какие шаги проверки нужно выполнить?"}'
+```
 
 ## Development
 
-### Code Quality
-
 ```bash
-make formatter   # black + ruff format
-make linter      # ruff check
-make typecheck   # mypy
-make security    # pysentry
+make tests linter typecheck   # pytest, ruff, mypy (src/ tests/ scripts/)
+make formatter                # black + ruff format (CI checks ruff format only)
+make corpus-dry-run
 ```
 
-## Usage Examples
-
-### 1. Upload and embed a Markdown document
+gRPC stubs for the reranker are committed; regenerate only with the pinned toolchain:
 
 ```bash
-FILE_ID=$(curl -s -X POST "http://localhost:8103/uploads" \
-  -F "document_name=internet-check-procedure.md" \
-  -F "domain=diagnostics" \
-  -F "document=@internet-check-procedure.md" | jq -r .file_id)
-
-TASK_ID=$(curl -s -X POST "http://localhost:8103/embeddings/$FILE_ID" | jq -r .task_id)
-
-curl -s "http://localhost:8103/tasks/$TASK_ID"
+uv run --with grpcio-tools==1.78.0 --with protobuf==6.33.6 \
+  python -m grpc_tools.protoc -I proto --python_out=src/docarag --grpc_python_out=src/docarag proto/reranker.proto
 ```
 
-### 2. Query the Knowledge Base
+## Project structure
 
-```bash
-curl -X POST "http://localhost:8103/query" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "What are the main findings?",
-    "max_iterations": 2
-  }'
+```
+src/docarag/
+├── api.py                  # FastAPI routes and lifespan
+├── settings.py             # pydantic-settings, extra="forbid"
+├── consts.py, errors.py
+├── clients/
+│   ├── embedding_http.py   # OpenAI-compatible /embeddings
+│   ├── reranker_http.py    # /rerank (TEI, vLLM, Jina)
+│   ├── reranker_client.py  # gRPC reranker (rag-services)
+│   ├── minio_client.py, vector_db_client.py
+├── services/
+│   ├── agent.py            # LangGraph workflow
+│   ├── llm.py              # chat model factory
+│   ├── embeddings.py, reranker.py
+│   ├── parsers.py          # PDF and Markdown chunking
+│   ├── uploader.py, vector_db.py
+├── tasks/embedding_task.py
+└── models/                 # request / response schemas
+scripts/
+├── load_corpus.py
+├── run_control_questions.py
+└── eval_golden.py
 ```
 
-### 3. Delete a document
-
-```bash
-curl -X DELETE "http://localhost:8103/documents/$FILE_ID"
-```
-
-## Contributing
-
-1. Follow PEP 8 style guidelines
-2. Add tests for new features
-3. Update documentation as needed
-4. Use absolute imports: `from src.docarag.services import ...`
-
-## License
-
-MIT
+Project conventions for Claude Code live in `CLAUDE.md`; progress, decisions and backlog in `.claude/`.

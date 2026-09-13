@@ -1,0 +1,105 @@
+# Model stack on SGLang for a Linux host with NVIDIA GPUs (deploy target).
+#
+#   docker compose -f compose.yml -f compose.sglang.yml up -d
+#
+# Three SGLang servers with the open Qwen weights, exposed through the same
+# HTTP contracts the api already speaks (OpenAI chat/embeddings, /v1/rerank).
+# Not runnable on macOS: Docker Desktop gives containers no GPU and the SGLang
+# images are CUDA-only (the arm64 tags target Grace / DGX Spark, not Apple).
+# Set HF_TOKEN in the shell for gated or rate-limited downloads.
+
+x-sglang: &sglang
+  image: lmsysorg/sglang:${SGLANG_TAG:-latest}
+  restart: unless-stopped
+  ipc: host
+  volumes:
+    - hf-cache:/root/.cache/huggingface
+  environment:
+    - HF_TOKEN=${HF_TOKEN:-}
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+  networks:
+    - arag-network
+
+services:
+  api:
+    environment:
+      - LLM_BASE_URL=${LLM_BASE_URL:-http://sglang-llm:30000/v1}
+      - LLM_API_KEY=${LLM_API_KEY:-EMPTY}
+      - LLM_MODEL=${LLM_MODEL:-Qwen/Qwen3.8-27B}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-http://sglang-embed:30000/v1}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-EMPTY}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-8B}
+      - RERANKER_PROVIDER=${RERANKER_PROVIDER:-openai-rerank}
+      - RERANKER_BASE_URL=${RERANKER_BASE_URL:-http://sglang-rerank:30000/v1}
+      - RERANKER_API_KEY=${RERANKER_API_KEY:-EMPTY}
+      - RERANKER_MODEL=${RERANKER_MODEL:-Qwen/Qwen3-Reranker-8B}
+    depends_on:
+      sglang-embed:
+        condition: service_healthy
+
+  sglang-llm:
+    <<: *sglang
+    container_name: doc-arag-sglang-llm
+    command: >
+      python3 -m sglang.launch_server
+      --model-path ${LLM_HF_MODEL:-Qwen/Qwen3.8-27B}
+      --served-model-name ${LLM_MODEL:-Qwen/Qwen3.8-27B}
+      --host 0.0.0.0 --port 30000
+      --context-length ${LLM_CTX_SIZE:-16384}
+      --reasoning-parser qwen3
+    ports:
+      - "30001:30000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:30000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 30
+      start_period: 900s
+
+  sglang-embed:
+    <<: *sglang
+    container_name: doc-arag-sglang-embed
+    command: >
+      python3 -m sglang.launch_server
+      --model-path ${EMBEDDING_HF_MODEL:-Qwen/Qwen3-Embedding-8B}
+      --served-model-name ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-8B}
+      --is-embedding
+      --host 0.0.0.0 --port 30000
+    ports:
+      - "30002:30000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:30000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 30
+      start_period: 900s
+
+  sglang-rerank:
+    <<: *sglang
+    container_name: doc-arag-sglang-rerank
+    # Decoder-only reranker: no --is-embedding, needs the yes/no chat template
+    command: >
+      python3 -m sglang.launch_server
+      --model-path ${RERANKER_HF_MODEL:-Qwen/Qwen3-Reranker-8B}
+      --served-model-name ${RERANKER_MODEL:-Qwen/Qwen3-Reranker-8B}
+      --trust-remote-code
+      --disable-radix-cache
+      --chat-template examples/chat_template/qwen3_reranker.jinja
+      --host 0.0.0.0 --port 30000
+    ports:
+      - "30003:30000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:30000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 30
+      start_period: 900s
+
+volumes:
+  hf-cache:

@@ -1,0 +1,13 @@
+# Решения (ADR-lite)
+
+## 2026-09-13
+1. **Одна коллекция Weaviate, `domain` = атрибуция чанка** (имя каталога корпуса). Классификатора нет. `QueryRequest.domain` — опциональный фильтр по чанк-домену; значение `"DefaultDocuments"` (легаси клиента) = без фильтра.
+2. **Модели через OpenAI/Cohere-совместимый HTTP, провайдер per-компонент через env.** По умолчанию всё на OpenRouter одним ключом: `qwen/qwen3.8-flash` (chat), `qwen/qwen3-embedding-8b` (embeddings, 4096 dims), `qwen/qwen3-reranker-8b` (rerank, `POST /rerank`). Для локального тестирования — `compose.models.yml`: три `llama-server` с открытыми весами (Qwen3.8-27B GGUF вместо закрытой Flash, Qwen3-Embedding-8B GGUF, Qwen3-Reranker-8B GGUF), те же контракты. Реранкер также `grpc` (rag-services) или `none`. gRPC-эмбеддинг удалён. (Уточнение 2026-09-13: ранний вывод «OpenRouter не отдаёт embeddings» был ошибкой — они в отдельном списке `/api/v1/embeddings/models`.)
+3. **Перебор моделей** — смена env + `scripts/run_control_questions.py`; смена эмбеддера требует `load_corpus --recreate`.
+4. **Чанкинг:** `MarkdownHeaderTextSplitter` h1–h3 + breadcrumb; `md_chunk_size=1800/200`, порог предупреждения 4000 (лимит 512 токенов старого эмбеддера снят). На текущем корпусе = 154 чанка при любом размере ≥ 900.
+5. **Гейт B (вычитка корпуса) отложен** — грузим как есть; места «на слух» в `oreo-data/GATE-B-REVIEW.md` ждут видео.
+6. **Прод (Yandex Cloud) выключен** — автодеплой при push в main игнорируем, deploy.yml не переделываем.
+7. **PR #12 (doc-arag) и PR #6 (rag-services) мержим** — правило «не мержить до T7» снято пользователем.
+8. Сабагенты: sonnet-5 / opus-5, не fable-5.1.
+9. **Golden set** хранится в `oreo-data/golden/` (данные рядом с корпусом), собирается из `parts/*.jsonl`; каждая запись проверяется против корпуса (`must_include` дословно в источнике, `section` — реальный заголовок). Метрики: doc_hit@k, domain_hit@k, fact_coverage, forbidden, опционально LLM-judge 1–5 по эталону. `/query` отдаёт `sources` ради retrieval-метрик.
+10. **Локальные модели на Mac — llama.cpp нативно на Metal** (`scripts/local_models.sh`), api в docker ходит на `host.docker.internal`. Проверено по документации: Docker Desktop даёт GPU контейнерам только на Windows/WSL2; SGLang на Apple Silicon есть лишь нативно через MLX (сборка из исходников, без embeddings/rerank), docker-образы SGLang — CUDA (arm64-теги под Grace/DGX Spark). **SGLang — для GPU-сервера** (`compose.sglang.yml`). Локальный генератор — открытая Qwen3.8-27B (Flash закрыта), пользователь ожидает, что она слабее; сравниваем на golden set.

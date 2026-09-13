@@ -9,19 +9,34 @@ services:
     volumes:
       - ./src/docarag:/app/src/docarag
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-anthropic_api_key}
-      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-sonnet-5}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://openrouter.ai/api/v1}
+      - LLM_API_KEY=${LLM_API_KEY:-EMPTY}
+      - LLM_MODEL=${LLM_MODEL:-qwen/qwen3.8-flash}
+      - LLM_EXTRA_BODY=${LLM_EXTRA_BODY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-}
       - ANTHROPIC_PROXY_URL=${ANTHROPIC_PROXY_URL:-}
       - ANTHROPIC_PROXY_USER=${ANTHROPIC_PROXY_USER:-}
       - ANTHROPIC_PROXY_PASS=${ANTHROPIC_PROXY_PASS:-}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-https://openrouter.ai/api/v1}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-EMPTY}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen/qwen3-embedding-8b}
+      - RERANKER_PROVIDER=${RERANKER_PROVIDER:-openai-rerank}
+      - RERANKER_SERVICE_URL=${RERANKER_SERVICE_URL:-reranker-service:8352}
+      - RERANKER_BASE_URL=${RERANKER_BASE_URL:-https://openrouter.ai/api/v1}
+      - RERANKER_API_KEY=${RERANKER_API_KEY:-EMPTY}
+      - RERANKER_MODEL=${RERANKER_MODEL:-qwen/qwen3-reranker-8b}
       - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
       - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-docarag-root-user}
       - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-default-password}
       - MINIO_BUCKET=${MINIO_BUCKET:-default-documents}
       - WEAVIATE_HOST=weaviate
       - WEAVIATE_PORT=8080
-      - EMBEDDING_SERVICE_URL=embedding-service:8351
     healthcheck:
       test: [
         "CMD", "python", "-c", "import urllib.request; \
