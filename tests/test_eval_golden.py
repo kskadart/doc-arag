@@ -165,3 +165,38 @@ def test_aggregate_and_render():
     report = eval_golden.render_markdown({"run_at": "now", "llm_model": "m"}, rows, k=5)
     assert "| **all** | 2 | 50% | 100% | 75% | 1 |" in report
     assert "type=negative" in report and "❌ руб" in report
+
+
+def test_judge_answer_merges_extra_body_and_parses_score():
+    import httpx
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": '{"score": 4, "reason": "minor omission"}'}}
+                ]
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        score, reason = eval_golden.judge_answer(
+            client,
+            "http://judge.test/v1",
+            "k",
+            "judge-model",
+            _record(),
+            "ответ",
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+
+    assert (score, reason) == (4, "minor omission")
+    assert seen["url"] == "http://judge.test/v1/chat/completions"
+    assert seen["body"]["model"] == "judge-model"
+    assert seen["body"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert seen["body"]["temperature"] == 0
