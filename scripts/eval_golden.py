@@ -382,6 +382,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--judge-api-key",
         default=os.environ.get("JUDGE_API_KEY") or os.environ.get("LLM_API_KEY"),
     )
+    parser.add_argument(
+        "--judge-extra-body",
+        default=os.environ.get("JUDGE_EXTRA_BODY"),
+        help='JSON merged into the judge request, e.g. \'{"chat_template_kwargs": {"enable_thinking": false}}\'',
+    )
     parser.add_argument("--timeout", type=float, default=180.0)
     return parser
 
@@ -444,6 +449,13 @@ def main(argv: list[str] | None = None) -> int:
             "--judge needs --judge-model and a base url / api key (or LLM_BASE_URL / LLM_API_KEY in env)"
         )
         return 1
+    judge_extra_body: dict[str, Any] | None = None
+    if args.judge_extra_body:
+        try:
+            judge_extra_body = json.loads(args.judge_extra_body)
+        except json.JSONDecodeError as exc:
+            logger.error(f"--judge-extra-body is not valid JSON: {exc}")
+            return 1
 
     run_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
     rows: list[dict[str, Any]] = []
@@ -490,6 +502,7 @@ def main(argv: list[str] | None = None) -> int:
                         args.judge_model,
                         record,
                         str(result.get("answer", "")),
+                        extra_body=judge_extra_body,
                     )
                 except (httpx.HTTPError, KeyError, ValueError) as exc:
                     judge_reason = f"judge failed: {exc}"
