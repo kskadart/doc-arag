@@ -5,6 +5,7 @@ import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
 from weaviate.classes.query import Filter, MetadataQuery
@@ -22,6 +23,16 @@ from src.docarag.settings import settings
 logger = logging.getLogger(__name__)
 
 _NUMBER_PATTERN = re.compile(r"\d+(?:\.\d+)?")
+
+GENERATION_SYSTEM_PROMPT = """Ты — ассистент оператора контакт-центра интернет-провайдера «Эра-Телеком». Отвечаешь на вопросы операторов по внутренней базе знаний.
+
+Правила:
+- Отвечай ТОЛЬКО на русском языке, независимо от языка контекста.
+- Используй только факты из контекста. Не додумывай цены, суммы, сроки, фамилии и названия, которых там нет.
+- Если в контексте нет нужных данных (например, конкретной стоимости), прямо скажи, что в базе знаний этого нет и что нужно уточнить у ответственного подразделения. Не называй никаких сумм.
+- Не пиши вступлений вроде «На основании предоставленных документов» и не ссылайся на «Документ 1» — сразу давай ответ.
+- Сохраняй формулировки базы знаний: названия модулей, вкладок, подразделений, ролей, шагов и речевые модули приводи дословно.
+- Для процедур перечисляй шаги по порядку. Отвечай сжато: обычно 2–6 предложений или короткий список."""
 
 
 class AgentState(BaseModel):
@@ -205,27 +216,26 @@ async def generate_answer_node(state: AgentState) -> dict[str, Any]:
     context_parts = []
     for idx, doc in enumerate(retrieved_docs, 1):
         context_parts.append(
-            f"Document {idx} (from {doc['document_name']}, page {doc['page']}):\n{doc['content']}\n"
+            f"[Фрагмент {idx}, источник {doc['document_name']}, раздел {doc['page']}]\n{doc['content']}\n"
         )
 
     context = "\n".join(context_parts)
 
     llm = get_chat_model(settings.llm_temperature)
 
-    generation_prompt = f"""You are a helpful AI assistant that answers questions based on the provided document context.
-
-Context from documents:
+    generation_prompt = f"""Контекст из базы знаний (фрагменты, лучшие первыми):
 {context}
 
-User Question: {query}
+Вопрос оператора: {query}
 
-Please provide a comprehensive answer based on the context above. If the context doesn't contain enough information to fully answer the question, acknowledge this and provide what information is available.
+Ответ:"""
 
-IMPORTANT: Answer in the SAME LANGUAGE as the user's question. Do not translate the question or answer to another language.
-
-Answer:"""
-
-    response = await llm.ainvoke(generation_prompt)
+    response = await llm.ainvoke(
+        [
+            SystemMessage(content=GENERATION_SYSTEM_PROMPT),
+            HumanMessage(content=generation_prompt),
+        ]
+    )
     answer = response.text.strip()
 
     logger.info(f"Generated answer of length: {len(answer)}")

@@ -37,6 +37,9 @@ DEFAULT_CORPUS = Path("/Users/kskada/develop/oreo-data/corpus")
 DEFAULT_API_URL = "http://localhost:8103"
 DEFAULT_OUT_DIR = Path(".claude/reports")
 RECORD_TYPES = {"factual", "procedural", "paraphrase", "cross-doc", "negative"}
+# A forbidden currency word counts only next to a number: "в рублях" is not a leak
+CURRENCY_TOKENS = ("руб", "рубл", "₽", "р.")
+PRICE_PATTERN = re.compile(r"\d[\d\s.,]*\s?(руб|₽|р\.)", re.IGNORECASE)
 REQUIRED_FIELDS = (
     "id",
     "domain",
@@ -188,8 +191,14 @@ def score_record(
     source_name = Path(str(record["source"])).name
 
     found = [f for f in record["must_include"] if str(f).lower() in lowered]
-    forbidden = [
-        f for f in record.get("must_not_include", []) if str(f).lower() in lowered
+    forbidden: list[str] = []
+    tokens = [str(t) for t in record.get("must_not_include", [])]
+    if any(t.lower() in CURRENCY_TOKENS for t in tokens):
+        price = PRICE_PATTERN.search(answer)
+        if price:
+            forbidden.append(" ".join(price.group(0).split()))
+    forbidden += [
+        t for t in tokens if t.lower() not in CURRENCY_TOKENS and t.lower() in lowered
     ]
     return {
         "doc_hit": any(s.get("document_name") == source_name for s in sources),

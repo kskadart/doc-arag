@@ -107,7 +107,7 @@ def test_score_record_hits_facts_and_forbidden():
     assert scores["doc_hit"] is True
     assert scores["domain_hit"] is True
     assert scores["fact_coverage"] == 1.0
-    assert scores["forbidden"] == ["руб"]
+    assert scores["forbidden"] == ["100 руб"]
     assert scores["russian"] is True
 
     scores_k1 = eval_golden.score_record(record, result, k=1)
@@ -200,3 +200,20 @@ def test_judge_answer_merges_extra_body_and_parses_score():
     assert seen["body"]["model"] == "judge-model"
     assert seen["body"]["chat_template_kwargs"] == {"enable_thinking": False}
     assert seen["body"]["temperature"] == 0
+
+
+def test_currency_forbidden_requires_an_amount():
+    record = _record(must_not_include=["руб", "₽", "Иванова"])
+    no_amount = {
+        "answer": "Цена указывается в рублях, точной суммы в базе нет.",
+        "sources": [],
+    }
+    assert eval_golden.score_record(record, no_amount, k=5)["forbidden"] == []
+
+    with_amount = {"answer": "Абонентская плата 1 500 руб. в месяц.", "sources": []}
+    assert eval_golden.score_record(record, with_amount, k=5)["forbidden"] == [
+        "1 500 руб"
+    ]
+
+    with_name = {"answer": "Расчёты ведёт Иванова.", "sources": []}
+    assert eval_golden.score_record(record, with_name, k=5)["forbidden"] == ["Иванова"]
