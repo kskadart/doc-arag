@@ -36,7 +36,7 @@ port_of() {
 
 args_for() {
   case "$1" in
-    chat)   echo "--hf-repo $LLM_HF_REPO --alias qwen3.8-27b --ctx-size $LLM_CTX_SIZE --jinja --n-gpu-layers 999" ;;
+    chat)   echo "--hf-repo $LLM_HF_REPO --alias qwen3.8-27b --ctx-size $LLM_CTX_SIZE --jinja --reasoning off --chat-template-kwargs {\"enable_thinking\":false} --n-gpu-layers 999" ;;
     embed)  echo "--hf-repo $EMBEDDING_HF_REPO --alias qwen3-embedding-8b --embeddings --pooling last --ctx-size $EMBEDDING_CTX_SIZE --batch-size 8192 --ubatch-size 8192 --n-gpu-layers 999" ;;
     rerank) echo "--hf-repo $RERANKER_HF_REPO --alias qwen3-reranker-8b --reranking --ctx-size $RERANKER_CTX_SIZE --n-gpu-layers 999" ;;
     *) echo "unknown service: $1" >&2; exit 64 ;;

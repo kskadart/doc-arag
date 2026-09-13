@@ -16,6 +16,9 @@ services:
       - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:8081/v1}
       - LLM_API_KEY=${LLM_API_KEY:-EMPTY}
       - LLM_MODEL=${LLM_MODEL:-qwen3.8-27b}
+      # Qwen3 thinking would eat the whole completion budget; the launcher also
+      # passes --reasoning-budget 0, this covers other llama.cpp/vLLM servers
+      - 'LLM_EXTRA_BODY=${LLM_EXTRA_BODY:-{"chat_template_kwargs": {"enable_thinking": false}}}'
       - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-http://host.docker.internal:8082/v1}
       - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-EMPTY}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen3-embedding-8b}

@@ -18,6 +18,7 @@
 
 ## Инфраструктура
 - `docker/compose.prod.yml` и `deploy.yml` получили новые `LLM_*/EMBEDDING_*/RERANKER_*` ключи, но GitHub secrets/vars под них не заведены — прод выключен, сделать при оживлении.
+- Локальный чат Qwen3.8-27B: без `--reasoning off` весь `max_tokens` уходит в thinking и `content` пустой; для других серверов (vLLM/SGLang) держать `LLM_EXTRA_BODY={"chat_template_kwargs": {"enable_thinking": false}}` (SGLang: `--reasoning-parser qwen3` + тот же kwarg).
 - `compose.sglang.yml` не проверен на живом GPU-хосте (путь к `qwen3_reranker.jinja` внутри образа, `--reasoning-parser qwen3` для Qwen3.8, размер `--context-length`).
 
 ## Корпус

@@ -57,7 +57,7 @@ scripts/local_models.sh status
 docker compose -f compose.yml -f compose.models.yml up -d
 ```
 
-Same OpenAI / `/v1/rerank` contracts as OpenRouter, so `.env` is the only difference between local testing and API deployment. Override weights with `LLM_HF_REPO`, `EMBEDDING_HF_REPO`, `RERANKER_HF_REPO` (`repo:quant`). Qwen3.8-Flash is closed-weight; Qwen3.8-27B is the open counterpart.
+Same OpenAI / `/v1/rerank` contracts as OpenRouter, so `.env` is the only difference between local testing and API deployment. Verified on an M-series Mac: embeddings 4096 dims, 9 chunks in 0.7 s; reranker 4 candidates in 0.4 s; chat ~26 tok/s. The launcher starts the chat model with thinking disabled (`--reasoning off`), otherwise Qwen3 spends the whole completion budget on reasoning. Override weights with `LLM_HF_REPO`, `EMBEDDING_HF_REPO`, `RERANKER_HF_REPO` (`repo:quant`). Qwen3.8-Flash is closed-weight; Qwen3.8-27B is the open counterpart.
 
 ### GPU server stack (Linux + NVIDIA, SGLang)
 
