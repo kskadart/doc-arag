@@ -67,6 +67,24 @@ docker compose -f compose.yml -f compose.sglang.yml up -d
 
 Three `lmsysorg/sglang` containers (chat, `--is-embedding` embeddings, decoder-only Qwen3 reranker with its yes/no chat template). SGLang's `/v1/rerank` answers with a bare list of `{index, score}`; the reranker client accepts that dialect as well as the `results[{index, relevance_score}]` one.
 
+
+## Authentication and authorization
+
+The API trusts the edge, it does not log anyone in itself. In production Caddy asks
+[Authelia](https://www.authelia.com/) about every request (`forward_auth`, both live in the
+`doc-arag-client` repo) and forwards the identity as `Remote-User`, `Remote-Groups`,
+`Remote-Email`, `Remote-Name`. `src/docarag/auth.py` turns those into a `CurrentUser`:
+
+| `AUTH_MODE` | Behaviour |
+|---|---|
+| `none` (default, local, tests) | every request is an anonymous member of `AUTH_ADMIN_GROUP` |
+| `trusted-headers` (production compose) | no `Remote-User` → 401; document endpoints (`/uploads`, `/embeddings/*`, `/documents*`) require the `AUTH_ADMIN_GROUP` group (403 otherwise); `/query`, `/tasks/*`, `/me` need any signed-in user |
+
+`GET /me` reports the caller (`username`, `groups`, `is_admin`, `auth_mode`) so the UI can hide
+what the user may not do. The headers are only trustworthy because compose binds the API,
+Weaviate and MinIO ports to `127.0.0.1`; never publish `8103` on a public interface with
+`AUTH_MODE=trusted-headers`.
+
 ## Loading a corpus
 
 ```bash

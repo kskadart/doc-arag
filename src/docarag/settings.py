@@ -81,6 +81,15 @@ class Settings(BaseSettings):
     reranker_timeout: int = 30
     reranker_max_retries: int = 1
 
+    # --- Auth -----------------------------------------------------------------
+    # none: every request is an anonymous administrator (local runs, tests).
+    # trusted-headers: identity comes from Remote-User / Remote-Groups set by
+    # the edge proxy (Caddy forward_auth -> Authelia); the API must then be
+    # reachable only through that proxy. See src/docarag/auth.py
+    auth_mode: Literal["none", "trusted-headers"] = "none"
+    # Group whose members may upload, embed, list and delete documents
+    auth_admin_group: str = "admins"
+
     # --- Storage --------------------------------------------------------------
     minio_endpoint: str
     minio_access_key: SecretStr

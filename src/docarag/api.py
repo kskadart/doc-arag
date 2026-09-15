@@ -12,11 +12,13 @@ from src.docarag.models import (
     AgentQueryResponse,
     DeleteResponse,
     HealthResponse,
+    MeResponse,
     UploadedFileResponse,
     UploadedFilesListResponse,
     TaskStatusResponse,
 )
 from src.docarag.dependencies import upload_dependencies, get_all_files
+from src.docarag.auth import CurrentUser, get_current_user, require_admin
 from src.docarag.clients import (
     check_vector_db_connection,
     get_minio_client,
@@ -61,7 +63,9 @@ app = FastAPI(
     "/documents/{document_id}", response_model=DeleteResponse, tags=["Documents"]
 )
 async def delete_document(
-    document_id: str, all_files: list[dict] = Depends(get_all_files)
+    document_id: str,
+    _admin: CurrentUser = Depends(require_admin),
+    all_files: list[dict] = Depends(get_all_files),
 ):
     """
     Delete an uploaded file from MinIO storage and the vector database.
@@ -107,6 +111,7 @@ async def delete_document(
 async def list_documents(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(10, ge=1, le=100, description="Items per page"),
+    _admin: CurrentUser = Depends(require_admin),
     all_files: list[dict] = Depends(get_all_files),
 ):
     """
@@ -159,6 +164,7 @@ async def list_documents(
 async def generate_embeddings(
     document_id: str,
     background_tasks: BackgroundTasks,
+    _admin: CurrentUser = Depends(require_admin),
     all_files: list[dict] = Depends(get_all_files),
 ):
     """
@@ -208,8 +214,23 @@ async def health_check():
     )
 
 
+@app.get("/me", response_model=MeResponse, tags=["Services"])
+async def me(user: CurrentUser = Depends(get_current_user)):
+    """The caller as asserted by the edge proxy; lets the UI adapt to the role."""
+    return MeResponse(
+        username=user.username,
+        display_name=user.display_name,
+        email=user.email,
+        groups=sorted(user.groups),
+        is_admin=user.is_admin,
+        auth_mode=settings.auth_mode,
+    )
+
+
 @app.post("/query", response_model=AgentQueryResponse, tags=["Query"])
-async def query_documents_endpoint(request: QueryRequest):
+async def query_documents_endpoint(
+    request: QueryRequest, user: CurrentUser = Depends(get_current_user)
+):
     """
     Query the document collection using the RAG agent.
 
@@ -223,6 +244,7 @@ async def query_documents_endpoint(request: QueryRequest):
     """
     from src.docarag.services.agent import query_documents
 
+    logger.debug("query from %s", user.username)
     try:
         return await query_documents(request)
     except Exception as e:
@@ -253,7 +275,9 @@ async def scrape_webpage(
 
 
 @app.get("/tasks/{task_id}", tags=["Tasks"])
-async def get_task_status_endpoint(task_id: str):
+async def get_task_status_endpoint(
+    task_id: str, _user: CurrentUser = Depends(get_current_user)
+):
     """
     Get the status of a background task.
 
@@ -290,6 +314,8 @@ async def get_task_status_endpoint(task_id: str):
 
 @app.post("/uploads", response_model=UploadResponse, tags=["Uploads"])
 async def upload_document_endpoint(
+    # The guard comes first: the multipart body is not parsed for non-admins
+    _admin: CurrentUser = Depends(require_admin),
     upload_request=Depends(upload_dependencies),
 ):
     """

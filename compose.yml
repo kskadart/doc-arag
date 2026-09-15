@@ -5,7 +5,7 @@ services:
       dockerfile: docker/Dockerfile
     container_name: doc-arag
     ports:
-      - "8103:8103"
+      - "127.0.0.1:8103:8103"
     volumes:
       - ./src/docarag:/app/src/docarag
     restart: unless-stopped
@@ -37,6 +37,8 @@ services:
       - MINIO_BUCKET=${MINIO_BUCKET:-default-documents}
       - WEAVIATE_HOST=weaviate
       - WEAVIATE_PORT=8080
+      - AUTH_MODE=${AUTH_MODE:-none}
+      - AUTH_ADMIN_GROUP=${AUTH_ADMIN_GROUP:-admins}
     healthcheck:
       test: [
         "CMD", "python", "-c", "import urllib.request; \
@@ -58,8 +60,8 @@ services:
     image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: doc-arag-minio
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - minio-data:/data
     environment:
@@ -82,7 +84,7 @@ services:
     image: semitechnologies/weaviate:1.39.0
     container_name: doc-arag-weaviate
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - weaviate-data:/var/lib/weaviate
     environment:

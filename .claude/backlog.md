@@ -6,7 +6,8 @@
 
 ## Эксплуатация
 - In-memory task store (`task_progress.py`) + `--workers 2` в `docker/Dockerfile.prod` → `GET /tasks/{id}` 404 на «чужом» воркере; нет вытеснения записей.
-- Weaviate `AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true` и MinIO дефолтный пароль в `docker/compose.prod.yml`; нет auth/rate-limit на API.
+- Weaviate `AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true` и MinIO дефолтный пароль в `docker/compose.prod.yml` (порты теперь только на 127.0.0.1, но внутри docker-сети всё открыто); rate-limit на API нет (Authelia даёт только брутфорс-защиту логина).
+- Чат-сессии не привязаны к пользователю: `DELETE /sessions/{id}` и память чата доступны любому залогиненному, знающему uuid. Добавить `owner` из `CurrentUser` в `feat/chat-sessions`.
 - Прод-secrets для новых `LLM_*/EMBEDDING_*/RERANKER_*` ключей в `deploy.yml` — когда прод оживёт.
 - `datetime.utcnow()` (deprecated) в `responses.py`, `task_progress.py`, `embedding_task.py`.
 - `minio_client.py`: `urlparse("host:port")` даёт scheme=host → `secure` всегда False для bare endpoint.
