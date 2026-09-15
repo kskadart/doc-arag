@@ -6,9 +6,13 @@ from weaviate.classes.data import DataObject
 from weaviate.classes.query import Filter
 from weaviate.collections.classes.config import CollectionConfig
 from weaviate.collections.classes.grpc import MetadataQuery
-from weaviate.exceptions import WeaviateInsertManyAllFailedError
+from weaviate.exceptions import (
+    UnexpectedStatusCodeError,
+    WeaviateInsertManyAllFailedError,
+)
 
 from src.docarag.clients import get_vector_db_client
+from src.docarag.clients.vector_db_client import is_collection_already_exists_error
 from src.docarag.consts import DEFAULT_COLLECTION_NAME, DEFAULT_DOMAIN
 from src.docarag.errors import EmbeddingError
 from src.docarag.models.responses import VectorSearchResponse, VectorSearchResult
@@ -37,14 +41,20 @@ async def create_default_collection() -> None:
         logger.info(f"Collection {collection_name} already exists")
         return
     async with get_vector_db_client() as client:
-        await client.collections.create(
-            name=collection_name,
-            description=DEFAULT_COLLECTION_DESCRIPTION,
-            properties=DEFAULT_COLLECTION_PROPERTIES,
-            vector_config=Configure.Vectors.self_provided(
-                name="content_vector",
-            ),
-        )
+        try:
+            await client.collections.create(
+                name=collection_name,
+                description=DEFAULT_COLLECTION_DESCRIPTION,
+                properties=DEFAULT_COLLECTION_PROPERTIES,
+                vector_config=Configure.Vectors.self_provided(
+                    name="content_vector",
+                ),
+            )
+        except UnexpectedStatusCodeError as exc:
+            if not is_collection_already_exists_error(exc):
+                raise
+            logger.info(f"Collection {collection_name} was created by another worker")
+            return
         logger.info(f"Collection {collection_name} created successfully")
 
 

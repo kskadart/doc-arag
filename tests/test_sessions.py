@@ -567,6 +567,35 @@ async def test_create_session_collection_creates_vectorless_collection(monkeypat
     }
 
 
+@pytest.mark.asyncio
+async def test_create_session_collection_tolerates_a_concurrent_create(monkeypatch):
+    import httpx
+    from weaviate.exceptions import UnexpectedStatusCodeError
+
+    monkeypatch.setattr(settings, "session_store", "weaviate")
+    client = Mock()
+    client.collections.exists = AsyncMock(return_value=False)
+    client.collections.create = AsyncMock(
+        side_effect=UnexpectedStatusCodeError(
+            "Collection may not have been created properly.",
+            httpx.Response(
+                422,
+                json={"error": [{"message": "TYPE_ADD_CLASS: class already exists"}]},
+                request=httpx.Request("POST", "http://w/v1/schema"),
+            ),
+        )
+    )
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch(
+        "src.docarag.services.sessions.get_vector_db_client", return_value=client
+    ):
+        await sessions.create_session_collection()
+
+    client.collections.create.assert_awaited_once()
+
+
 def test_get_session_store_follows_settings(monkeypatch):
     sessions.get_session_store.cache_clear()
     monkeypatch.setattr(settings, "session_store", "memory")

@@ -2,10 +2,14 @@ import pytest
 from unittest.mock import Mock, AsyncMock, patch
 from datetime import datetime
 from weaviate.collections.classes.batch import DeleteManyReturn
-from weaviate.exceptions import WeaviateInsertManyAllFailedError
+from weaviate.exceptions import (
+    UnexpectedStatusCodeError,
+    WeaviateInsertManyAllFailedError,
+)
 from src.docarag.errors import EmbeddingError
 from src.docarag.services.vector_db import (
     add_batch_objects,
+    create_default_collection,
     delete_objects_by_document_name,
     find_nearest_vectors,
     verify_embedding_dimension,
@@ -365,3 +369,52 @@ async def test_verify_embedding_dimension_probe_failure_only_warns(caplog):
         assert await verify_embedding_dimension() is None
 
     assert any("skipping dimension check" in r.message for r in caplog.records)
+
+
+def _status_error(status: int, body: dict):
+    import httpx
+
+    return UnexpectedStatusCodeError(
+        "Collection may not have been created properly.",
+        httpx.Response(
+            status, json=body, request=httpx.Request("POST", "http://w/v1/schema")
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_default_collection_tolerates_a_concurrent_create(
+    mock_weaviate_client,
+):
+    """Two uvicorn workers race at startup: the loser's 422 'already exists' is not an error."""
+    mock_weaviate_client.collections.exists = AsyncMock(return_value=False)
+    mock_weaviate_client.collections.create = AsyncMock(
+        side_effect=_status_error(
+            422, {"error": [{"message": "TYPE_ADD_CLASS: class already exists"}]}
+        )
+    )
+    with patch(
+        "src.docarag.services.vector_db.get_vector_db_client",
+        return_value=mock_weaviate_client,
+    ):
+        await create_default_collection()
+
+    mock_weaviate_client.collections.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_default_collection_reraises_other_schema_errors(
+    mock_weaviate_client,
+):
+    mock_weaviate_client.collections.exists = AsyncMock(return_value=False)
+    mock_weaviate_client.collections.create = AsyncMock(
+        side_effect=_status_error(
+            422, {"error": [{"message": "invalid property name"}]}
+        )
+    )
+    with patch(
+        "src.docarag.services.vector_db.get_vector_db_client",
+        return_value=mock_weaviate_client,
+    ):
+        with pytest.raises(UnexpectedStatusCodeError, match="invalid property name"):
+            await create_default_collection()

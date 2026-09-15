@@ -22,9 +22,13 @@ from langchain_core.messages import (
 )
 from weaviate.classes.config import Configure
 from weaviate.classes.query import Filter, Sort
+from weaviate.exceptions import UnexpectedStatusCodeError
 from weaviate.util import generate_uuid5
 
-from src.docarag.clients.vector_db_client import get_vector_db_client
+from src.docarag.clients.vector_db_client import (
+    get_vector_db_client,
+    is_collection_already_exists_error,
+)
 from src.docarag.consts import SESSION_COLLECTION_NAME, SESSION_SUMMARY_ROLE
 from src.docarag.errors import SessionStoreError
 from src.docarag.models.responses import AgentQueryResponse
@@ -505,13 +509,22 @@ async def create_session_collection() -> None:
         if await client.collections.exists(SESSION_COLLECTION_NAME):
             logger.info(f"Collection {SESSION_COLLECTION_NAME} already exists")
             return
-        await client.collections.create(
-            name=SESSION_COLLECTION_NAME,
-            description=SESSION_COLLECTION_DESCRIPTION,
-            properties=SESSION_COLLECTION_PROPERTIES,
-            # Same shape as the document collection; vectors are simply never sent
-            vector_config=Configure.Vectors.self_provided(),
-        )
+        try:
+            await client.collections.create(
+                name=SESSION_COLLECTION_NAME,
+                description=SESSION_COLLECTION_DESCRIPTION,
+                properties=SESSION_COLLECTION_PROPERTIES,
+                # Same shape as the document collection; vectors are simply never sent
+                vector_config=Configure.Vectors.self_provided(),
+            )
+        except UnexpectedStatusCodeError as exc:
+            # Another uvicorn worker won the startup race
+            if not is_collection_already_exists_error(exc):
+                raise
+            logger.info(
+                f"Collection {SESSION_COLLECTION_NAME} was created by another worker"
+            )
+            return
         logger.info(f"Collection {SESSION_COLLECTION_NAME} created successfully")
 
 

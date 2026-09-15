@@ -7,11 +7,21 @@ from tenacity import (
     retry_if_exception_type,
 )
 import weaviate
-from weaviate.exceptions import WeaviateConnectionError
+from weaviate.exceptions import UnexpectedStatusCodeError, WeaviateConnectionError
 from src.docarag.settings import settings
 
 
 logger = logging.getLogger(__name__)
+
+
+def is_collection_already_exists_error(exc: UnexpectedStatusCodeError) -> bool:
+    """
+    Tell whether Weaviate refused a create because the class already exists.
+
+    Several uvicorn workers run the startup hook at once: all of them see no
+    collection, one creates it and the others get 422 "class already exists".
+    """
+    return exc.status_code == 422 and "already exists" in str(exc)
 
 
 async def check_vector_db_connection() -> None:
