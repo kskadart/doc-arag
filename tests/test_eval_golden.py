@@ -249,3 +249,20 @@ def test_alt_sources_count_as_doc_hit_and_are_validated(corpus: Path):
     assert problems == [
         "parts/x.jsonl:1 (diag-001): alt source not found: diagnostics/other.md"
     ]
+
+
+def test_must_include_may_come_from_alt_source(corpus: Path):
+    (corpus / "diagnostics" / "other.md").write_text(
+        "# Other\n\nСрок отработки — 40–60 минут.\n", encoding="utf-8"
+    )
+    record = _record(
+        alt_sources=["diagnostics/other.md"], must_include=["pppoe", "40–60 минут"]
+    )
+    assert eval_golden.validate_records([record], corpus) == []
+
+    record = _record(alt_sources=["diagnostics/other.md"], must_include=["нет такого"])
+    problems = eval_golden.validate_records([record], corpus)
+    assert problems == [
+        "parts/x.jsonl:1 (diag-001): must_include 'нет такого' not found in "
+        "diagnostics/check.md or alt_sources"
+    ]

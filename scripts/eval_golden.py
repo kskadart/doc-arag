@@ -169,9 +169,16 @@ def validate_records(records: list[dict[str, Any]], corpus_root: Path) -> list[s
         if not source.is_file():
             problems.append(f"{origin} ({rid}): source not found: {record['source']}")
             continue
+        alt_texts: list[str] = []
         for alt in record.get("alt_sources", []) or []:
-            if not (corpus_root / str(alt)).is_file():
+            alt_path = corpus_root / str(alt)
+            if not alt_path.is_file():
                 problems.append(f"{origin} ({rid}): alt source not found: {alt}")
+                continue
+            if str(alt) not in cache:
+                alt_text = alt_path.read_text(encoding="utf-8")
+                cache[str(alt)] = (alt_text.lower(), _headings(alt_text))
+            alt_texts.append(cache[str(alt)][0])
         if source.parent.name != record["domain"]:
             problems.append(
                 f"{origin} ({rid}): domain {record['domain']!r} != directory {source.parent.name!r}"
@@ -185,9 +192,11 @@ def validate_records(records: list[dict[str, Any]], corpus_root: Path) -> list[s
                 f"{origin} ({rid}): section not a heading in source: {record['section']!r}"
             )
         for fact in record["must_include"]:
-            if str(fact).lower() not in lowered:
+            needle = str(fact).lower()
+            if needle not in lowered and not any(needle in t for t in alt_texts):
                 problems.append(
                     f"{origin} ({rid}): must_include {fact!r} not found in {record['source']}"
+                    " or alt_sources"
                 )
         if not re.search(r"[а-яё]", str(record["question"]).lower()):
             problems.append(f"{origin} ({rid}): question is not in Russian")
