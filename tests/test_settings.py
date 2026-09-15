@@ -77,6 +77,18 @@ def test_llm_extra_body_parses_json_from_env(monkeypatch):
     assert s.llm_extra_body == {"reasoning": {"enabled": False}}
 
 
+@pytest.mark.parametrize("raw", ["", "   "])
+def test_empty_llm_json_env_values_are_unset(monkeypatch, raw):
+    """compose passes `${LLM_EXTRA_BODY:-}` as an empty string; it must not crash startup."""
+    monkeypatch.setenv("LLM_EXTRA_BODY", raw)
+    monkeypatch.setenv("LLM_DEFAULT_HEADERS", raw)
+
+    s = Settings(_env_file=None, **_MINIO)
+
+    assert s.llm_extra_body is None
+    assert s.llm_default_headers is None
+
+
 def test_unknown_env_key_in_dotenv_is_rejected(tmp_path):
     env_file = tmp_path / ".env"
     env_file.write_text(

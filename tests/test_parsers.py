@@ -202,8 +202,9 @@ Ask the subscriber about the dial tone.
 """
 
 
-def test_parse_markdown_splits_sections_into_separate_pages():
-    """Test that each markdown header section becomes its own page."""
+def test_parse_markdown_splits_sections_into_separate_pages(monkeypatch):
+    """Test that each markdown header section becomes its own page without merging."""
+    monkeypatch.setattr(settings, "md_merge_sections", False)
     chunks = parse_document(
         MARKDOWN_SAMPLE, "text/markdown", chunk_size=512, chunk_overlap=64
     )
@@ -211,6 +212,31 @@ def test_parse_markdown_splits_sections_into_separate_pages():
     pages = sorted({chunk["page"] for chunk in chunks})
 
     assert pages == [1, 2, 3]
+
+
+def test_parse_markdown_merges_small_sections_into_one_chunk():
+    """Test that consecutive small sections are packed together under the shared header."""
+    chunks = parse_document(
+        MARKDOWN_SAMPLE, "text/markdown", chunk_size=512, chunk_overlap=64
+    )
+
+    assert len(chunks) == 1
+    content = str(chunks[0]["content"])
+    assert content.startswith("Diagnostics\n\n# Diagnostics")
+    assert "## Internet check" in content and "## Telephony check" in content
+    assert chunks[0]["page"] == 1
+
+
+def test_parse_markdown_merge_respects_chunk_size(monkeypatch):
+    """Test that merging stops at the merge ceiling and the next group starts a new page."""
+    monkeypatch.setattr(settings, "md_merge_max_size", 120)
+    chunks = parse_document(
+        MARKDOWN_SAMPLE, "text/markdown", chunk_size=512, chunk_overlap=64
+    )
+
+    pages = [chunk["page"] for chunk in chunks]
+    assert pages == [1, 2, 3]
+    assert all(len(str(chunk["content"])) <= 120 for chunk in chunks)
 
 
 def test_parse_markdown_frontmatter_is_not_part_of_chunks():
@@ -225,8 +251,9 @@ def test_parse_markdown_frontmatter_is_not_part_of_chunks():
     assert "title: Diagnostics" not in joined
 
 
-def test_parse_markdown_subsection_chunk_carries_breadcrumb_prefix():
+def test_parse_markdown_subsection_chunk_carries_breadcrumb_prefix(monkeypatch):
     """Test that a chunk of a nested section is prefixed with its header trail."""
+    monkeypatch.setattr(settings, "md_merge_sections", False)
     chunks = parse_document(
         MARKDOWN_SAMPLE, "text/markdown", chunk_size=512, chunk_overlap=64
     )
@@ -260,8 +287,9 @@ def test_parse_markdown_oversize_section_is_split_within_budget():
         assert str(chunk["content"]).startswith("Guide > Long section\n\n")
 
 
-def test_parse_markdown_plain_text_mime_reaches_markdown_parser():
+def test_parse_markdown_plain_text_mime_reaches_markdown_parser(monkeypatch):
     """Test that text/plain is dispatched to the markdown branch."""
+    monkeypatch.setattr(settings, "md_merge_sections", False)
     chunks = parse_document(
         MARKDOWN_SAMPLE, "text/plain", chunk_size=512, chunk_overlap=64
     )

@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import SecretStr, model_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     embedding_batch_size: int = 16
     embedding_timeout: int = 120
     embedding_max_retries: int = 3
+    # Extra JSON merged into the /embeddings body, e.g. OpenRouter provider routing:
+    # {"provider": {"order": ["nebius", "deepinfra"], "allow_fallbacks": false}}
+    embedding_extra_body: dict[str, Any] | None = None
 
     # --- Reranker -------------------------------------------------------------
     reranker_provider: Literal["openai-rerank", "grpc", "none"] = "openai-rerank"
@@ -115,10 +118,22 @@ class Settings(BaseSettings):
     # 512-token ceiling no longer applies)
     md_chunk_size: int = 1800
     md_chunk_overlap: int = 200
+    # Consecutive small header sections are packed into one chunk up to
+    # md_chunk_size, so a file of many tiny sections (e.g. "Stage 1..11")
+    # keeps neighbouring steps together instead of scattering them
+    md_merge_sections: bool = True
+    # Ceiling for a merged chunk: smaller than md_chunk_size so that a merged
+    # chunk stays focused (2-3 short steps), while a single long section may
+    # still occupy the full md_chunk_size budget
+    md_merge_max_size: int = 1000
     max_file_size_mb: int = 50
 
     # --- Retrieval / agent ------------------------------------------------------
     initial_retrieval_k: int = 20
+    # Retrieve with the original query as well as the rephrased one and union
+    # the candidates before reranking: the rephrase can drift away from a
+    # second document that the operator's own wording still reaches
+    retrieval_use_original_query: bool = True
     rerank_top_k: int = 5
     agent_confidence_threshold: float = 0.7
 
@@ -137,6 +152,16 @@ class Settings(BaseSettings):
     session_max_stored_messages: int = 200
     # Periodic TTL sweep; 0 disables it (the startup sweep still runs)
     session_cleanup_interval_minutes: int = 60
+
+    @field_validator(
+        "llm_extra_body", "llm_default_headers", "embedding_extra_body", mode="before"
+    )
+    @classmethod
+    def _empty_json_is_none(cls, value: Any) -> Any:
+        """Treat an empty env value as unset: compose passes `${VAR:-}` as ""."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @staticmethod
     def _is_openrouter(base_url: str | None) -> bool:

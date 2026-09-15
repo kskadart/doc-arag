@@ -216,3 +216,32 @@ async def test_get_embedding_dimension_probes_once():
         assert await client.get_embedding_dimension_async() == 7
 
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_extra_body_is_merged_but_cannot_override_core_fields():
+    """Provider routing reaches the request body; model and input stay authoritative."""
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(
+            200, json={"data": [{"index": 0, "embedding": [0.5, 0.25]}]}
+        )
+
+    client = EmbeddingHTTPClient(
+        base_url="http://embed.test/v1",
+        api_key="k",
+        model="qwen/qwen3-embedding-8b",
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+        extra_body={
+            "provider": {"order": ["nebius"], "allow_fallbacks": False},
+            "model": "ignored",
+        },
+    )
+
+    assert await client.embed_text_async("hello") == [0.5, 0.25]
+    assert seen[0]["provider"] == {"order": ["nebius"], "allow_fallbacks": False}
+    assert seen[0]["model"] == "qwen/qwen3-embedding-8b"
+    assert seen[0]["input"] == ["hello"]

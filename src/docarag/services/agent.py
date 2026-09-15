@@ -1,5 +1,6 @@
 """LangGraph RAG agent for multi-step document retrieval and question answering."""
 
+import asyncio
 import logging
 import re
 from typing import Any, Literal
@@ -37,11 +38,16 @@ GENERATION_SYSTEM_PROMPT = """Ты — ассистент оператора к�
 Правила:
 - Отвечай ТОЛЬКО на русском языке, независимо от языка контекста.
 - Используй только факты из контекста. Не додумывай цены, суммы, сроки, фамилии и названия, которых там нет.
-- Отвечай полно: приведи ВСЕ относящиеся к вопросу шаги, условия, сроки, названия модулей, вкладок, кнопок, подразделений и ролей, которые есть в контексте. Лучше лишняя деталь из базы знаний, чем пропущенная.
+- Отвечай полно: приведи ВСЕ относящиеся к вопросу шаги, условия, сроки, названия модулей, вкладок, кнопок, подразделений и ролей, которые есть в контексте. Лучше лишняя деталь из базы знаний, чем пропущенная, но только если она относится к той же ситуации, что и вопрос.
+- Бери факт только из фрагмента про ту же программу, услугу или ситуацию. Не переноси навигацию, кнопки и правила из одной программы («Лапа», BG Billing) или ситуации в другую.
+- Не делай выводов, которых нет в тексте: без «подразумевается», «скорее всего», «чаще всего», без собственных советов (обратиться к руководству, в отдел продаж) и без ранжирования причин. Если причин несколько, перечисли их равноправно, каждую с условием из базы знаний.
+- Прежде чем написать, что каких-то сведений в базе знаний нет, проверь все фрагменты: название ресурса, срок или ответственный может быть в другом фрагменте.
 - Для процедур перечисляй шаги по порядку, нумерованным списком, ничего не пропуская.
 - Если точных данных нет (например, конкретной стоимости или фамилии), прямо скажи, что в базе знаний их нет, и ОБЯЗАТЕЛЬНО добавь то, что база знаний говорит по этому вопросу: как это устроено, где посмотреть, кто отвечает, какой речевой модуль использовать. Не называй никаких сумм и фамилий.
 - Сохраняй формулировки базы знаний: названия модулей, вкладок, подразделений, ролей, шагов и речевые модули приводи дословно.
 - Разговор может продолжать прежнюю тему: учитывай предыдущие реплики и сводку, оставайся последовательным с уже сказанным, но никогда не противоречь контексту.
+- Порядок стадий и шагов бери только из их номеров и явных указаний в тексте. Не выводи «следующую» стадию из порядка фрагментов: если она не названа в контексте, не называй её.
+- Если вопрос затрагивает несколько документов (например, что делать и куда дальше уходит обращение, какие сроки), объедини сведения из всех относящихся фрагментов.
 - Не пиши вступлений вроде «На основании предоставленных документов» и не ссылайся на «Фрагмент N» — сразу давай ответ."""
 
 
@@ -70,7 +76,11 @@ class AgentState(BaseModel):
         description="Standalone queries already tried in this run",
     )
     query_embedding: list[float] | None = Field(
-        default=None, description="Vector embedding of query"
+        default=None, description="Vector embedding of the rephrased query"
+    )
+    original_query_embedding: list[float] | None = Field(
+        default=None,
+        description="Vector embedding of the original query, when it differs",
     )
     retrieved_docs: list[dict[str, Any]] = Field(
         default_factory=list, description="Retrieved documents"
@@ -166,11 +176,22 @@ async def embed_query_node(state: AgentState) -> dict[str, Any]:
 
     logger.info(f"Generating embedding for query: {query_text}")
 
-    query_embedding = await get_embedding_service().embed_text_async(query_text)
+    service = get_embedding_service()
+    original_query_embedding: list[float] | None = None
+    if settings.retrieval_use_original_query and query_text != state.query:
+        query_embedding, original_query_embedding = await asyncio.gather(
+            service.embed_text_async(query_text),
+            service.embed_text_async(state.query),
+        )
+    else:
+        query_embedding = await service.embed_text_async(query_text)
 
     logger.info(f"Generated embedding with dimension: {len(query_embedding)}")
 
-    return {"query_embedding": query_embedding}
+    return {
+        "query_embedding": query_embedding,
+        "original_query_embedding": original_query_embedding,
+    }
 
 
 def _build_retrieval_filter(file_id: str | None, domain: str | None) -> Any:
@@ -188,11 +209,16 @@ async def retrieve_documents_node(state: AgentState) -> dict[str, Any]:
     """
     Retrieve relevant documents from Weaviate using vector similarity search.
     """
-    query_embedding = state.query_embedding
+    vectors = [
+        vector
+        for vector in (state.query_embedding, state.original_query_embedding)
+        if vector
+    ]
     filters = _build_retrieval_filter(state.file_id, state.domain)
 
     logger.info(
         f"Retrieving documents with k={settings.initial_retrieval_k}"
+        f" for {len(vectors)} query vector(s)"
         + (f", domain={state.domain}" if state.domain else "")
         + (f", file_id={state.file_id}" if state.file_id else "")
     )
@@ -200,19 +226,18 @@ async def retrieve_documents_node(state: AgentState) -> dict[str, Any]:
     async with get_vector_db_client() as client:
         collection = client.collections.get(DEFAULT_COLLECTION_NAME)
 
-        response = await collection.query.near_vector(
-            near_vector=query_embedding,
-            limit=settings.initial_retrieval_k,
-            target_vector="content_vector",
-            return_metadata=MetadataQuery(distance=True),
-            filters=filters,
-        )
-
-        retrieved_docs = []
-        for obj in response.objects:
-            distance = obj.metadata.distance if obj.metadata else None
-            retrieved_docs.append(
-                {
+        by_uuid: dict[str, dict[str, Any]] = {}
+        for vector in vectors:
+            response = await collection.query.near_vector(
+                near_vector=vector,
+                limit=settings.initial_retrieval_k,
+                target_vector="content_vector",
+                return_metadata=MetadataQuery(distance=True),
+                filters=filters,
+            )
+            for obj in response.objects:
+                distance = obj.metadata.distance if obj.metadata else None
+                doc = {
                     "uuid": str(obj.uuid),
                     "content": obj.properties.get("content", ""),
                     "document_name": obj.properties.get("document_name", ""),
@@ -222,7 +247,13 @@ async def retrieve_documents_node(state: AgentState) -> dict[str, Any]:
                     "distance": distance,
                     "similarity_score": 1.0 - distance if distance is not None else 0.0,
                 }
-            )
+                known = by_uuid.get(doc["uuid"])
+                if known is None or doc["similarity_score"] > known["similarity_score"]:
+                    by_uuid[doc["uuid"]] = doc
+
+        retrieved_docs = sorted(
+            by_uuid.values(), key=lambda doc: doc["similarity_score"], reverse=True
+        )
 
         logger.info(f"Retrieved {len(retrieved_docs)} documents")
 

@@ -10,6 +10,7 @@ from src.docarag.services.agent import (
     AgentState,
     parse_confidence,
     rerank_documents_node,
+    embed_query_node,
     retrieve_documents_node,
     should_continue,
 )
@@ -176,6 +177,65 @@ async def test_retrieve_documents_node_perfect_match_scores_one():
         result = await retrieve_documents_node(state)
 
     assert result["retrieved_docs"][0]["similarity_score"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_retrieve_documents_node_unions_both_query_vectors():
+    """Test that original and rephrased vectors are both searched and merged by uuid."""
+    shared = _object(0.4)
+    only_original = _object(0.2)
+    only_original.uuid = "uuid-2"
+    shared_better = _object(0.1)
+    first, second = Mock(), Mock()
+    first.objects = [shared]
+    second.objects = [only_original, shared_better]
+    near_vector = AsyncMock(side_effect=[first, second])
+    state = AgentState(query="q", query_embedding=[0.1], original_query_embedding=[0.2])
+
+    with patch(
+        "src.docarag.services.agent.get_vector_db_client",
+        return_value=_weaviate_client_with(near_vector),
+    ):
+        result = await retrieve_documents_node(state)
+
+    assert near_vector.call_count == 2
+    docs = result["retrieved_docs"]
+    assert [doc["uuid"] for doc in docs] == ["uuid-1", "uuid-2"]
+    assert docs[0]["similarity_score"] == pytest.approx(0.9)
+
+
+@pytest.mark.asyncio
+async def test_embed_query_node_embeds_original_query_when_rephrased_differs():
+    """Test that the original query gets its own vector alongside the rephrased one."""
+    service = Mock()
+    service.embed_text_async = AsyncMock(side_effect=[[0.1], [0.2]])
+    state = AgentState(query="original", rephrased_query="rephrased")
+
+    with patch(
+        "src.docarag.services.agent.get_embedding_service", return_value=service
+    ):
+        result = await embed_query_node(state)
+
+    assert result == {"query_embedding": [0.1], "original_query_embedding": [0.2]}
+    embedded = [call.args[0] for call in service.embed_text_async.call_args_list]
+    assert embedded == ["rephrased", "original"]
+
+
+@pytest.mark.asyncio
+async def test_embed_query_node_skips_original_when_disabled(monkeypatch):
+    """Test that the original query is not embedded when the setting is off."""
+    monkeypatch.setattr(settings, "retrieval_use_original_query", False)
+    service = Mock()
+    service.embed_text_async = AsyncMock(return_value=[0.1])
+    state = AgentState(query="original", rephrased_query="rephrased")
+
+    with patch(
+        "src.docarag.services.agent.get_embedding_service", return_value=service
+    ):
+        result = await embed_query_node(state)
+
+    assert result == {"query_embedding": [0.1], "original_query_embedding": None}
+    assert service.embed_text_async.call_count == 1
 
 
 @pytest.mark.asyncio

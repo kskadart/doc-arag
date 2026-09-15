@@ -60,9 +60,9 @@ def test_chunk_report_counts_sections(corpus: Path, caplog):
     with caplog.at_level("INFO", logger="load_corpus"):
         total = load_corpus.chunk_report(files)
 
-    # billing: H1 intro-less "# B" + "## X" -> 1 chunk; diagnostics: intro + A + B -> 3
-    assert total == 4
-    assert "files=2 domains=2 chunks=4" in caplog.text
+    # small sections are merged: billing "# B" + "## X" -> 1 chunk; diagnostics intro + A + B -> 1
+    assert total == 2
+    assert "files=2 domains=2 chunks=2" in caplog.text
 
 
 def _api(handler) -> httpx.Client:

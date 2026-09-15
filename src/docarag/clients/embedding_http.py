@@ -26,6 +26,7 @@ class EmbeddingHTTPClient:
         max_retries: int | None = None,
         retry_backoff: float = 0.5,
         transport: httpx.AsyncBaseTransport | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> None:
         """
         Initialize the client; every argument falls back to settings.
@@ -40,6 +41,8 @@ class EmbeddingHTTPClient:
             max_retries: Retries on transport errors, 429 and 5xx responses
             retry_backoff: Base of the exponential backoff in seconds
             transport: Optional httpx transport, used by tests to mock the server
+            extra_body: Extra JSON merged into every request body (provider routing);
+                the model, input and dimensions fields always win
         """
         self.base_url = (base_url or settings.embedding_base_url).rstrip("/")
         self.api_key = api_key or settings.embedding_api_key.get_secret_value()
@@ -53,6 +56,9 @@ class EmbeddingHTTPClient:
             max_retries if max_retries is not None else settings.embedding_max_retries
         )
         self.retry_backoff = retry_backoff
+        self.extra_body = (
+            extra_body if extra_body is not None else settings.embedding_extra_body
+        )
         self._transport = transport
         self._client: httpx.AsyncClient | None = None
         self._dimension: int | None = None
@@ -112,6 +118,7 @@ class EmbeddingHTTPClient:
     async def _embed_request(self, inputs: list[str]) -> list[list[float]]:
         """Issue one `/embeddings` call with retries and validate the payload."""
         payload: dict[str, Any] = {
+            **(self.extra_body or {}),
             "model": self.model,
             "input": inputs,
             "encoding_format": "float",
