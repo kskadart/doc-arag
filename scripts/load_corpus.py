@@ -27,6 +27,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from scripts.api_auth import api_headers
 
 logger = logging.getLogger("load_corpus")
 
@@ -343,7 +344,7 @@ def main(argv: list[str] | None = None) -> int:
         recreate_collection(args.weaviate_url)
 
     failures: list[str] = []
-    with httpx.Client(timeout=60.0) as client:
+    with httpx.Client(timeout=60.0, headers=api_headers()) as client:
         existing = list_documents(client, args.api_url)
         for file in files:
             try:

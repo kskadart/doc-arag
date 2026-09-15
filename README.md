@@ -68,6 +68,28 @@ docker compose -f compose.yml -f compose.sglang.yml up -d
 
 Three `lmsysorg/sglang` containers (chat, `--is-embedding` embeddings, decoder-only Qwen3 reranker with its yes/no chat template). SGLang's `/v1/rerank` answers with a bare list of `{index, score}`; the reranker client accepts that dialect as well as the `results[{index, relevance_score}]` one.
 
+
+## Authentication and authorization
+
+The API trusts the edge, it does not log anyone in itself. In production Caddy asks
+[Authelia](https://www.authelia.com/) about every request (`forward_auth`, both live in the
+`doc-arag-client` repo) and forwards the identity as `Remote-User`, `Remote-Groups`,
+`Remote-Email`, `Remote-Name`, plus `X-Auth-Proxy-Secret`. `src/docarag/auth.py` turns those into
+a `CurrentUser`:
+
+| `AUTH_TRUSTED_HEADERS` | Behaviour |
+|---|---|
+| `false` (default, local, tests) | login disabled: every request is an anonymous administrator; the api logs a warning at startup |
+| `true` (production compose) | requests without the right `X-Auth-Proxy-Secret` or without `Remote-User` → 401; document endpoints (`/uploads`, `/embeddings/*`, `/documents*`, `/scrappings`) require the `AUTH_ADMIN_GROUP` group (403 otherwise); `/query`, `/tasks/*`, `/me` need any signed-in user; `/health` stays public |
+
+`GET /me` reports the caller (`username`, `groups`, `is_admin`, `auth_mode`) so the UI can hide
+what the user may not do. The proxy secret (`AUTH_PROXY_SECRET`, the same value in the client
+repo's `.env`) is what makes the headers trustworthy: the api shares the `arag-common-network`
+docker network with other containers, and binding the host ports to `127.0.0.1` only keeps the
+LAN out. Scripts that call the api directly (`load_corpus`, `eval_golden`,
+`run_control_questions`) read `AUTH_PROXY_SECRET` from the environment or `.env` and act as an
+admin service account.
+
 ## Loading a corpus
 
 ```bash

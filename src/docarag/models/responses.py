@@ -20,6 +20,17 @@ class HealthResponse(BaseModel):
     )
 
 
+class MeResponse(BaseModel):
+    """Who the edge proxy says is calling, and what they may do."""
+
+    username: str = Field(..., description="Login asserted by the proxy")
+    display_name: Optional[str] = Field(None, description="Human-readable name")
+    email: Optional[str] = Field(None, description="E-mail when known")
+    groups: List[str] = Field(default_factory=list, description="Sorted group names")
+    is_admin: bool = Field(..., description="Member of the administrator group")
+    auth_mode: str = Field(..., description="none or trusted-headers")
+
+
 class UploadResponse(BaseModel):
     """Response for document upload."""
 
