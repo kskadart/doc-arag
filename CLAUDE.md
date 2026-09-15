@@ -32,7 +32,7 @@ uv run python -m scripts.eval_golden [--judge]   # оценка сервиса �
 Системные зависимости на macOS: `brew install uv libmagic`; Docker Desktop должен быть запущен.
 
 ## Жёсткие правила
-- **Git:** commit, push, merge — только по явной команде пользователя. Push в `main` запускает deploy.yml (прод на Yandex Cloud сейчас выключен, но workflow жив).
+- **Git:** commit, push, merge — только по явной команде пользователя. Push/merge в `main` запускает `deploy.yml` и **выкатывает прод** на Selectel (`79.141.79.95`, https://oreo.kskada.com, runbook `docs/deploy-selectel.md`); порядок: сначала doc-arag, затем doc-arag-client.
 - **Версии:** только статические пины `pkg==X.Y.Z` в `pyproject.toml`; после `uv add` — перепинить точную версию.
 - **Settings (`src/docarag/settings.py`) — `extra="forbid"`:** любой неизвестный ключ в `.env` роняет старт. Новые параметры — только полями с дефолтом в коде. `.env` писать по `settings.py`; `env.example` — образец, не копировать вслепую.
 - **Имена документов и файлов корпуса — только латиница** (кириллица ломает S3-метаданные MinIO). `domain` — slug `^[a-z0-9][a-z0-9-]*$`.

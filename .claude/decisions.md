@@ -6,7 +6,7 @@
 3. **Перебор моделей** — смена env + `scripts/run_control_questions.py`; смена эмбеддера требует `load_corpus --recreate`.
 4. **Чанкинг:** `MarkdownHeaderTextSplitter` h1–h3 + breadcrumb; `md_chunk_size=1800/200`, порог предупреждения 4000 (лимит 512 токенов старого эмбеддера снят). На текущем корпусе = 154 чанка при любом размере ≥ 900.
 5. **Гейт B (вычитка корпуса) отложен** — грузим как есть; места «на слух» в `oreo-data/GATE-B-REVIEW.md` ждут видео.
-6. **Прод (Yandex Cloud) выключен** — автодеплой при push в main игнорируем, deploy.yml не переделываем.
+6. ~~**Прод (Yandex Cloud) выключен** — автодеплой при push в main игнорируем, deploy.yml не переделываем.~~ Заменено 2026-09-16: прод переезжает на Selectel (CPU, OpenRouter), `deploy.yml` в обоих репозиториях смотрит на новый сервер, домен `oreo.kskada.com` + портал Authelia `auth.oreo.kskada.com`.
 7. **PR #12 (doc-arag) и PR #6 (rag-services) мержим** — правило «не мержить до T7» снято пользователем.
 8. Сабагенты: sonnet-5 / opus-5, не fable-5.1.
 9. **Golden set** хранится в `oreo-data/golden/` (данные рядом с корпусом), собирается из `parts/*.jsonl`; каждая запись проверяется против корпуса (`must_include` дословно в источнике, `section` — реальный заголовок). Метрики: doc_hit@k, domain_hit@k, fact_coverage, forbidden, опционально LLM-judge 1–5 по эталону. `/query` отдаёт `sources` ради retrieval-метрик.
