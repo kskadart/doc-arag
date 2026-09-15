@@ -42,14 +42,14 @@ doc-arag:
 | `LLM_EXTRA_BODY` | var, необязательно | по умолчанию `{"reasoning": {"enabled": false}}` |
 | `RERANK_TOP_K` | var, необязательно | по умолчанию `8` |
 
-doc-arag-client: `SERVER_HOST`, `SERVER_USER`, `SSH_PRIVATE_KEY` (те же), vars `DOMAIN=rag.kskada.com`, `BACKEND_API_HOST=api`, `BACKEND_API_PORT=8103`, `API_PATH=/api`.
+doc-arag-client: `SERVER_HOST`, `SERVER_USER`, `SSH_PRIVATE_KEY` (те же), vars `DOMAIN=oreo.kskada.com`, `BACKEND_API_HOST=api`, `BACKEND_API_PORT=8103`, `API_PATH=/api`.
 Авторизация (Authelia): var `AUTH_MODE=on`, secrets `AUTH_PROXY_SECRET` (как у бэкенда), `AUTHELIA_SESSION_SECRET`, `AUTHELIA_STORAGE_ENCRYPTION_KEY`, `AUTHELIA_JWT_SECRET` (каждый `openssl rand -hex 32`), `AUTHELIA_USERS_YML_B64` (base64 от `authelia/users.yml`). Без `AUTH_MODE=on` сайт открыт всем: вопросы за счёт OpenRouter, загрузка и удаление документов.
 
 Переменная `EMBEDDING_SERVICE_URL` в окружении doc-arag устарела и не используется.
 
 ## DNS (reg.ru)
 
-A-записи `rag.kskada.com` и `auth.rag.kskada.com` (портал Authelia) → `79.141.79.95`. Пока они указывают на старый сервер или отсутствуют, Caddy не выпустит сертификаты.
+A-записи `oreo.kskada.com` и `auth.oreo.kskada.com` (портал Authelia) → `79.141.79.95`. Пока они указывают на старый сервер или отсутствуют, Caddy не выпустит сертификаты.
 
 ## Выкладка
 
@@ -62,7 +62,7 @@ ssh -N -L 8103:127.0.0.1:8103 -L 8080:127.0.0.1:8080 oreon &
 uv run python -m scripts.load_corpus        # по умолчанию localhost:8103 и localhost:8080
 ```
 
-4. Проверка: `curl https://rag.kskada.com/api/health`.
+4. Проверка: `curl https://oreo.kskada.com/api/health`.
 
 ## Откат
 
