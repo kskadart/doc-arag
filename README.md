@@ -73,17 +73,21 @@ Three `lmsysorg/sglang` containers (chat, `--is-embedding` embeddings, decoder-o
 The API trusts the edge, it does not log anyone in itself. In production Caddy asks
 [Authelia](https://www.authelia.com/) about every request (`forward_auth`, both live in the
 `doc-arag-client` repo) and forwards the identity as `Remote-User`, `Remote-Groups`,
-`Remote-Email`, `Remote-Name`. `src/docarag/auth.py` turns those into a `CurrentUser`:
+`Remote-Email`, `Remote-Name`, plus `X-Auth-Proxy-Secret`. `src/docarag/auth.py` turns those into
+a `CurrentUser`:
 
-| `AUTH_MODE` | Behaviour |
+| `AUTH_TRUSTED_HEADERS` | Behaviour |
 |---|---|
-| `none` (default, local, tests) | every request is an anonymous member of `AUTH_ADMIN_GROUP` |
-| `trusted-headers` (production compose) | no `Remote-User` → 401; document endpoints (`/uploads`, `/embeddings/*`, `/documents*`) require the `AUTH_ADMIN_GROUP` group (403 otherwise); `/query`, `/tasks/*`, `/me` need any signed-in user |
+| `false` (default, local, tests) | login disabled: every request is an anonymous administrator; the api logs a warning at startup |
+| `true` (production compose) | requests without the right `X-Auth-Proxy-Secret` or without `Remote-User` → 401; document endpoints (`/uploads`, `/embeddings/*`, `/documents*`, `/scrappings`) require the `AUTH_ADMIN_GROUP` group (403 otherwise); `/query`, `/tasks/*`, `/me` need any signed-in user; `/health` stays public |
 
 `GET /me` reports the caller (`username`, `groups`, `is_admin`, `auth_mode`) so the UI can hide
-what the user may not do. The headers are only trustworthy because compose binds the API,
-Weaviate and MinIO ports to `127.0.0.1`; never publish `8103` on a public interface with
-`AUTH_MODE=trusted-headers`.
+what the user may not do. The proxy secret (`AUTH_PROXY_SECRET`, the same value in the client
+repo's `.env`) is what makes the headers trustworthy: the api shares the `arag-common-network`
+docker network with other containers, and binding the host ports to `127.0.0.1` only keeps the
+LAN out. Scripts that call the api directly (`load_corpus`, `eval_golden`,
+`run_control_questions`) read `AUTH_PROXY_SECRET` from the environment or `.env` and act as an
+admin service account.
 
 ## Loading a corpus
 

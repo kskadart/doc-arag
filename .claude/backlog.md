@@ -6,7 +6,8 @@
 
 ## Эксплуатация
 - In-memory task store (`task_progress.py`) + `--workers 2` в `docker/Dockerfile.prod` → `GET /tasks/{id}` 404 на «чужом» воркере; нет вытеснения записей.
-- Weaviate `AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true` и MinIO дефолтный пароль в `docker/compose.prod.yml` (порты теперь только на 127.0.0.1, но внутри docker-сети всё открыто); rate-limit на API нет (Authelia даёт только брутфорс-защиту логина).
+- Weaviate `AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true` и MinIO дефолтный пароль в `docker/compose.prod.yml` (порты только на 127.0.0.1, API защищён секретом прокси, но Weaviate и MinIO внутри общей docker-сети открыты любому соседнему контейнеру — вынести api/weaviate/minio в отдельную сеть, в общей оставить только api); rate-limit на API нет (Authelia даёт только брутфорс-защиту логина).
+- FastAPI парсит multipart-тело до зависимостей, поэтому `require_admin` на `/uploads` срабатывает после приёма файла; не-админов отсекает раньше Authelia на границе, но при прямом доступе в сеть большой файл всё равно будет принят до 403.
 - Чат-сессии не привязаны к пользователю: `DELETE /sessions/{id}` и память чата доступны любому залогиненному, знающему uuid. Добавить `owner` из `CurrentUser` в `feat/chat-sessions`.
 - Прод-secrets для новых `LLM_*/EMBEDDING_*/RERANKER_*` ключей в `deploy.yml` — когда прод оживёт.
 - `datetime.utcnow()` (deprecated) в `responses.py`, `task_progress.py`, `embedding_task.py`.

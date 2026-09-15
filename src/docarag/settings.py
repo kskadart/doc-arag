@@ -81,13 +81,17 @@ class Settings(BaseSettings):
     reranker_timeout: int = 30
     reranker_max_retries: int = 1
 
-    # --- Auth -----------------------------------------------------------------
-    # none: every request is an anonymous administrator (local runs, tests).
-    # trusted-headers: identity comes from Remote-User / Remote-Groups set by
-    # the edge proxy (Caddy forward_auth -> Authelia); the API must then be
-    # reachable only through that proxy. See src/docarag/auth.py
-    auth_mode: Literal["none", "trusted-headers"] = "none"
-    # Group whose members may upload, embed, list and delete documents
+    # --- Auth (see src/docarag/auth.py) ----------------------------------------
+    # The API never checks passwords. When auth_trusted_headers is on, the
+    # identity comes from Remote-User / Remote-Groups set by the edge proxy
+    # (Caddy forward_auth -> Authelia) and every request must also carry
+    # X-Auth-Proxy-Secret = auth_proxy_secret: containers on the shared docker
+    # network can reach the API directly, so the headers alone prove nothing.
+    # Off (default): every caller is an anonymous administrator (local, tests).
+    auth_trusted_headers: bool = False
+    auth_proxy_secret: SecretStr = SecretStr("")
+    # Group whose members may upload, embed, list and delete documents; the
+    # Authelia rules in doc-arag-client are templated from the same variable
     auth_admin_group: str = "admins"
 
     # --- Storage --------------------------------------------------------------
@@ -152,6 +156,8 @@ class Settings(BaseSettings):
             raise ValueError(
                 "reranker_provider=openai-rerank requires RERANKER_BASE_URL"
             )
+        if self.auth_trusted_headers and not self.auth_proxy_secret.get_secret_value():
+            raise ValueError("AUTH_TRUSTED_HEADERS=true requires AUTH_PROXY_SECRET")
         return self
 
 

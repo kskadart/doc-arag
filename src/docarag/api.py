@@ -2,7 +2,15 @@ from contextlib import asynccontextmanager
 import logging
 import datetime
 import uuid
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Depends, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    status,
+)
 from src.docarag.models import (
     ScrapeRequest,
     QueryRequest,
@@ -18,7 +26,12 @@ from src.docarag.models import (
     TaskStatusResponse,
 )
 from src.docarag.dependencies import upload_dependencies, get_all_files
-from src.docarag.auth import CurrentUser, get_current_user, require_admin
+from src.docarag.auth import (
+    CurrentUser,
+    auth_mode,
+    get_current_user,
+    require_admin,
+)
 from src.docarag.clients import (
     check_vector_db_connection,
     get_minio_client,
@@ -47,6 +60,11 @@ async def lifespan(app: FastAPI):
     await create_default_collection()
     if settings.startup_verify_embedding_dimension:
         await verify_embedding_dimension()
+    if not settings.auth_trusted_headers:
+        logger.warning(
+            "AUTH_TRUSTED_HEADERS=false: login disabled, every caller is an "
+            "anonymous administrator"
+        )
 
     yield
 
@@ -58,14 +76,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Authorization is declared once per router, not per handler, so a route added
+# here is guarded by construction. Only /health stays on the bare app.
+user_router = APIRouter(dependencies=[Depends(get_current_user)])
+admin_router = APIRouter(dependencies=[Depends(require_admin)])
 
-@app.delete(
+
+@admin_router.delete(
     "/documents/{document_id}", response_model=DeleteResponse, tags=["Documents"]
 )
 async def delete_document(
-    document_id: str,
-    _admin: CurrentUser = Depends(require_admin),
-    all_files: list[dict] = Depends(get_all_files),
+    document_id: str, all_files: list[dict] = Depends(get_all_files)
 ):
     """
     Delete an uploaded file from MinIO storage and the vector database.
@@ -107,11 +128,12 @@ async def delete_document(
         )
 
 
-@app.get("/documents", response_model=UploadedFilesListResponse, tags=["Documents"])
+@admin_router.get(
+    "/documents", response_model=UploadedFilesListResponse, tags=["Documents"]
+)
 async def list_documents(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(10, ge=1, le=100, description="Items per page"),
-    _admin: CurrentUser = Depends(require_admin),
     all_files: list[dict] = Depends(get_all_files),
 ):
     """
@@ -158,13 +180,12 @@ async def list_documents(
         )
 
 
-@app.post(
+@admin_router.post(
     "/embeddings/{document_id}", response_model=EmbeddingResponse, tags=["Embedding"]
 )
 async def generate_embeddings(
     document_id: str,
     background_tasks: BackgroundTasks,
-    _admin: CurrentUser = Depends(require_admin),
     all_files: list[dict] = Depends(get_all_files),
 ):
     """
@@ -214,7 +235,7 @@ async def health_check():
     )
 
 
-@app.get("/me", response_model=MeResponse, tags=["Services"])
+@user_router.get("/me", response_model=MeResponse, tags=["Services"])
 async def me(user: CurrentUser = Depends(get_current_user)):
     """The caller as asserted by the edge proxy; lets the UI adapt to the role."""
     return MeResponse(
@@ -223,14 +244,12 @@ async def me(user: CurrentUser = Depends(get_current_user)):
         email=user.email,
         groups=sorted(user.groups),
         is_admin=user.is_admin,
-        auth_mode=settings.auth_mode,
+        auth_mode=auth_mode(),
     )
 
 
-@app.post("/query", response_model=AgentQueryResponse, tags=["Query"])
-async def query_documents_endpoint(
-    request: QueryRequest, user: CurrentUser = Depends(get_current_user)
-):
+@user_router.post("/query", response_model=AgentQueryResponse, tags=["Query"])
+async def query_documents_endpoint(request: QueryRequest):
     """
     Query the document collection using the RAG agent.
 
@@ -244,7 +263,6 @@ async def query_documents_endpoint(
     """
     from src.docarag.services.agent import query_documents
 
-    logger.debug("query from %s", user.username)
     try:
         return await query_documents(request)
     except Exception as e:
@@ -255,7 +273,7 @@ async def query_documents_endpoint(
         )
 
 
-@app.post("/scrappings", response_model=ScrapeResponse, tags=["Documents"])
+@admin_router.post("/scrappings", response_model=ScrapeResponse, tags=["Documents"])
 async def scrape_webpage(
     background_tasks: BackgroundTasks,
     request: ScrapeRequest,
@@ -274,10 +292,8 @@ async def scrape_webpage(
     )
 
 
-@app.get("/tasks/{task_id}", tags=["Tasks"])
-async def get_task_status_endpoint(
-    task_id: str, _user: CurrentUser = Depends(get_current_user)
-):
+@user_router.get("/tasks/{task_id}", tags=["Tasks"])
+async def get_task_status_endpoint(task_id: str):
     """
     Get the status of a background task.
 
@@ -312,10 +328,8 @@ async def get_task_status_endpoint(
     )
 
 
-@app.post("/uploads", response_model=UploadResponse, tags=["Uploads"])
+@admin_router.post("/uploads", response_model=UploadResponse, tags=["Uploads"])
 async def upload_document_endpoint(
-    # The guard comes first: the multipart body is not parsed for non-admins
-    _admin: CurrentUser = Depends(require_admin),
     upload_request=Depends(upload_dependencies),
 ):
     """
@@ -342,3 +356,7 @@ async def upload_document_endpoint(
             status_code=500,
             detail=f"Error processing upload: {str(e)}",
         )
+
+
+app.include_router(user_router)
+app.include_router(admin_router)

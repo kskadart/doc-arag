@@ -103,6 +103,11 @@ jobs:
             MINIO_ROOT_USER=${{ secrets.MINIO_ROOT_USER }}
             MINIO_ROOT_PASSWORD=${{ secrets.MINIO_ROOT_PASSWORD }}
             MINIO_BUCKET=${{ vars.MINIO_BUCKET || 'default-documents' }}
+            # Identity comes from the doc-arag-client edge (Caddy + Authelia); the
+            # same AUTH_PROXY_SECRET must be configured there
+            AUTH_TRUSTED_HEADERS=${{ vars.AUTH_TRUSTED_HEADERS || 'true' }}
+            AUTH_PROXY_SECRET=${{ secrets.AUTH_PROXY_SECRET }}
+            AUTH_ADMIN_GROUP=${{ vars.AUTH_ADMIN_GROUP || 'admins' }}
             EOF
             
             chmod 600 .env

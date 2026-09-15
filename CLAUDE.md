@@ -45,4 +45,4 @@ uv run python -m scripts.eval_golden [--judge]   # оценка сервиса �
 ## Архитектура в двух строках
 Upload: `POST /uploads` (multipart: `document_name`, `domain`, файл) → MinIO → `POST /embeddings/{id}` → фоновая задача (parse → embed → purge-before-insert → Weaviate `DefaultDocuments`, named vector `content_vector`) → `GET /tasks/{id}`.
 Query: `POST /query` → LangGraph: rephrase → embed → retrieve (k=20, опц. фильтр `domain`) → rerank (graceful fallback) → generate → evaluate (порог 0.7).
-Auth: бэкенд паролей не знает — Caddy+Authelia (`doc-arag-client`) кладут `Remote-User`/`Remote-Groups`, `src/docarag/auth.py` их читает при `AUTH_MODE=trusted-headers` (по умолчанию `none` = аноним-админ). Порты api/weaviate/minio — только `127.0.0.1`, не открывать.
+Auth: бэкенд паролей не знает — Caddy+Authelia (`doc-arag-client`) кладут `Remote-User`/`Remote-Groups` + `X-Auth-Proxy-Secret`; `src/docarag/auth.py` верит им только при `AUTH_TRUSTED_HEADERS=true` и совпадении `AUTH_PROXY_SECRET` (граница доверия — секрет, не порт: docker-сеть общая). По умолчанию `false` = аноним-админ. Роутеры `user_router`/`admin_router` в `api.py` — новые ручки вешать на них, не на `app`.

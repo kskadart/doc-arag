@@ -12,6 +12,8 @@ os.environ.setdefault("EMBEDDING_MODEL", "test/embedding-model")
 os.environ.setdefault("RERANKER_PROVIDER", "grpc")
 os.environ.setdefault("RERANKER_SERVICE_URL", "localhost:8352")
 os.environ.setdefault("STARTUP_VERIFY_EMBEDDING_DIMENSION", "false")
+# Login disabled under test regardless of the developer's .env
+os.environ.setdefault("AUTH_TRUSTED_HEADERS", "false")
 os.environ.setdefault("MINIO_ENDPOINT", "localhost:9000")
 os.environ.setdefault("MINIO_ACCESS_KEY", "test-access-key")
 os.environ.setdefault("MINIO_SECRET_KEY", "test-secret-key")

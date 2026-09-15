@@ -37,7 +37,8 @@ services:
       - MINIO_BUCKET=${MINIO_BUCKET:-default-documents}
       - WEAVIATE_HOST=weaviate
       - WEAVIATE_PORT=8080
-      - AUTH_MODE=${AUTH_MODE:-none}
+      - AUTH_TRUSTED_HEADERS=${AUTH_TRUSTED_HEADERS:-false}
+      - AUTH_PROXY_SECRET=${AUTH_PROXY_SECRET:-}
       - AUTH_ADMIN_GROUP=${AUTH_ADMIN_GROUP:-admins}
     healthcheck:
       test: [

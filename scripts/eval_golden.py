@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from scripts.api_auth import api_headers
 
 logger = logging.getLogger("eval_golden")
 
@@ -498,7 +499,7 @@ def main(argv: list[str] | None = None) -> int:
 
     run_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
     rows: list[dict[str, Any]] = []
-    with httpx.Client(timeout=args.timeout) as client:
+    with httpx.Client(timeout=args.timeout, headers=api_headers()) as client:
         health = client.get(f"{args.api_url}/health")
         health.raise_for_status()
         config = {
