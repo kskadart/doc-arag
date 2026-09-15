@@ -6,8 +6,9 @@ Document ingestion and question answering over a private corpus: FastAPI + LangG
 
 - **FastAPI** (`src/docarag/api.py`) — REST API on `:8103`.
 - **MinIO** — stores the original documents (`file_id/filename`, `domain` in object metadata).
-- **Weaviate 1.39** — one collection `DefaultDocuments`, named vector `content_vector`, properties `document_name`, `page`, `content`, `domain`, `date_created`.
-- **LangGraph agent** (`services/agent.py`) — rephrase → embed → retrieve (k=20, optional `domain` filter) → rerank (graceful fallback) → generate → evaluate (threshold 0.7, up to `max_iterations`).
+- **Weaviate 1.39** — one collection `DefaultDocuments`, named vector `content_vector`, properties `document_name`, `page`, `content`, `domain`, `date_created`; plus `ChatMessages` (no vectors) for conversational sessions.
+- **LangGraph agent** (`services/agent.py`) — condense (standalone query resolved against the chat history) → embed → retrieve (k=20, optional `domain` filter) → rerank (graceful fallback) → generate (history as messages) → evaluate (threshold 0.7, up to `max_iterations`; a retry asks for a different formulation).
+- **Sessions** (`services/sessions.py`) — per-chat memory outside the graph: verbatim tail + rolling LLM summary, stored in Weaviate with a TTL, see [Conversational sessions](#conversational-sessions).
 - **Providers** — `services/llm.py` (chat), `clients/embedding_http.py` (embeddings), `clients/reranker_http.py` / `clients/reranker_client.py` (reranker), all selected in `settings.py`.
 
 ### Ingestion pipeline
@@ -132,9 +133,20 @@ uv run python -m scripts.eval_golden --judge --judge-model qwen/qwen3.7-plus   #
 | `GET` | `/tasks/{task_id}` | task progress |
 | `GET` | `/documents?page=&page_size=` | list uploaded documents |
 | `DELETE` | `/documents/{file_id}` | delete from MinIO and Weaviate |
-| `POST` | `/query` | `{"query": "...", "domain": "diagnostics" \| null, "max_iterations": 2}` |
+| `POST` | `/query` | `{"query": "...", "domain": "diagnostics" \| null, "max_iterations": 2, "session_id": "chat-1" \| null}` |
+| `GET` | `/sessions/{session_id}` | stored history of a chat: messages with standalone query, confidence and sources, plus the rolling summary |
+| `DELETE` | `/sessions/{session_id}` | forget a chat (idempotent) |
 
 `domain` in `/query` is an optional chunk filter; an empty value or the legacy collection name `DefaultDocuments` means no filter.
+
+### Conversational sessions
+
+Every chat in the UI is a session: the client sends its chat id as `session_id` (`^[A-Za-z0-9][A-Za-z0-9_-]*$`, up to 64 chars) and the agent resolves follow-ups ("а как его подключить?", "а для юрлиц?") against what was asked before. Without `session_id` a query is fully stateless, which is what `scripts/run_control_questions.py` and `scripts/eval_golden.py` rely on.
+
+- **What the agent sees:** the last `SESSION_HISTORY_MESSAGES` (6) messages verbatim, capped at `SESSION_MESSAGE_MAX_CHARS` each, plus a rolling summary of everything older once the session passes `SESSION_SUMMARY_AFTER_MESSAGES` (12). The summary is refreshed in the background after the answer is returned.
+- **What is stored:** one Weaviate object per message in `ChatMessages` (`session_id`, `role`, `content`, `turn_index`, `created_at`, `updated_at`; assistant rows also `standalone_query`, `confidence`, `source_documents`, `source_domains`) and one summary row per session. `rephrased_query` in the response is the standalone query that was embedded.
+- **Lifetime:** rows older than `SESSION_TTL_DAYS` (7) are deleted at startup and every `SESSION_CLEANUP_INTERVAL_MINUTES`. `SESSION_STORE=memory` keeps everything in process memory instead (tests, dry runs).
+- A session store outage never fails `/query`: the answer is produced without history and a warning is logged.
 
 ```bash
 curl -X POST http://localhost:8103/uploads \
@@ -143,6 +155,13 @@ curl -X POST http://localhost:8103/uploads \
 
 curl -X POST http://localhost:8103/query -H "Content-Type: application/json" \
   -d '{"query": "У абонента не работает интернет — какие шаги проверки нужно выполнить?"}'
+
+# follow-up in the same chat
+curl -X POST http://localhost:8103/query -H "Content-Type: application/json" \
+  -d '{"query": "Что такое ELAN?", "session_id": "chat-1"}'
+curl -X POST http://localhost:8103/query -H "Content-Type: application/json" \
+  -d '{"query": "А как его подключить?", "session_id": "chat-1"}'
+curl http://localhost:8103/sessions/chat-1
 ```
 
 ## Development
@@ -177,9 +196,11 @@ src/docarag/
 │   ├── llm.py              # chat model factory
 │   ├── embeddings.py, reranker.py
 │   ├── parsers.py          # PDF and Markdown chunking
+│   ├── sessions.py         # chat memory: stores, prompt helpers, TTL sweep
 │   ├── uploader.py, vector_db.py
 ├── tasks/embedding_task.py
-└── models/                 # request / response schemas
+├── utils/                  # Weaviate collection layouts
+└── models/                 # request / response schemas, sessions.py
 scripts/
 ├── load_corpus.py
 ├── run_control_questions.py

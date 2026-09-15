@@ -74,6 +74,16 @@ def test_trusted_headers_without_identity_is_401(client, trusted_headers):
     assert client.get("/tasks/x", headers=PROXY).status_code == 401
 
 
+def test_chat_sessions_require_a_signed_in_user(client, trusted_headers):
+    """Chat history is behind the user guard, not open to any network neighbour."""
+    assert client.get("/sessions/chat-1", headers=PROXY).status_code == 401
+    assert client.delete("/sessions/chat-1", headers=PROXY).status_code == 401
+    assert client.get("/sessions/chat-1", headers=OPERATOR).status_code == 404
+    response = client.delete("/sessions/chat-1", headers=OPERATOR)
+    assert response.status_code == 200
+    assert response.json()["deleted_messages"] == 0
+
+
 def test_health_stays_public(client, trusted_headers):
     assert client.get("/health").status_code == 200
 

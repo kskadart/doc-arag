@@ -1,8 +1,11 @@
 # Backlog (вне текущего скоупа; из аудита 2026-09-13)
 
 ## Агент
-- Итерации бесполезны: `rephrase_query_node` всегда читает `state.query`, второй круг повторяет первый (3 лишних LLM-вызова). Передавать в rephrase историю/предыдущий rephrased_query или убирать цикл.
-- Промпты inline f-string без system message; вынести в шаблоны.
+- ~~Итерации бесполезны: второй круг повторяет первый~~ — закрыто 2026-09-14 (ветка `feat/chat-sessions`): rephrase получает `previous_queries` и просит другую формулировку.
+- Промпт evaluate — inline f-string без system message; condense/generate/summary уже константы в `agent.py` / `sessions.py`, вынести всё в один модуль шаблонов.
+- Чат-сессии без владельца: `/sessions/{id}` под `user_router` (решение №12), но любой вошедший пользователь, знающий id, читает и удаляет чужую историю, а `/query` с чужим `session_id` дописывает в неё. Нужен `owner` (`Remote-User`) у сообщений в `ChatMessages` и проверка в store; клиент генерирует uuid, где доступен `crypto.randomUUID`, что снижает риск угадывания.
+- TTL-sweep сессий идёт в каждом uvicorn-воркере (`--workers 2` в prod) — идемпотентно, но лишние вызовы; при оживлении прода вынести в один воркер или cron.
+- Weaviate 1.39 умеет native `object_ttl_config`; когда фича стабилизируется, заменить ручной `delete_many` по `updated_at`.
 
 ## Эксплуатация
 - In-memory task store (`task_progress.py`) + `--workers 2` в `docker/Dockerfile.prod` → `GET /tasks/{id}` 404 на «чужом» воркере; нет вытеснения записей.
