@@ -1,14 +1,23 @@
-from typing import Optional
 from fastapi import UploadFile
 from pydantic import BaseModel, Field, model_validator
+
+from src.docarag.consts import DEFAULT_DOMAIN, DOMAIN_MAX_LENGTH, DOMAIN_PATTERN
 
 
 class UploadModel(BaseModel):
     """Model for document upload with validation."""
 
     document_name: str = Field(..., max_length=255, description="Name of the document")
-    document: Optional[UploadFile] = Field(None, description="File upload")
-    document_url: Optional[str] = Field(None, description="URL to download file from")
+    document: UploadFile | None = Field(default=None, description="File upload")
+    document_url: str | None = Field(
+        default=None, description="URL to download file from"
+    )
+    domain: str = Field(
+        default=DEFAULT_DOMAIN,
+        max_length=DOMAIN_MAX_LENGTH,
+        pattern=DOMAIN_PATTERN,
+        description="Knowledge domain slug the document belongs to",
+    )
 
     @model_validator(mode="after")
     def validate_document_source(self):

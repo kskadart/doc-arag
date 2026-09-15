@@ -1,16 +1,20 @@
 """LangGraph RAG agent for multi-step document retrieval and question answering."""
 
 import logging
-from typing import List, Dict, Any, Optional, Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+import grpc
+from pydantic import BaseModel, Field, SecretStr
 from langchain_anthropic import ChatAnthropic
 from langgraph.graph import StateGraph, END
+from langgraph.graph.state import CompiledStateGraph
 
 from src.docarag.clients.vector_db_client import get_vector_db_client
 from src.docarag.clients.embedding import EmbeddingGRPCClient
+from src.docarag.consts import DEFAULT_COLLECTION_NAME, DEFAULT_DOMAIN
 from src.docarag.models.requests import QueryRequest
 from src.docarag.models.responses import AgentQueryResponse
+from src.docarag.services.reranker import RerankerService
 from src.docarag.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -20,9 +24,11 @@ def get_anthropic_client(temperature: float = 0.7) -> ChatAnthropic:
     """
     Create a ChatAnthropic client with optional proxy support.
     """
-    return ChatAnthropic(
-        model=settings.anthropic_model,
-        api_key=settings.anthropic_api_key,
+    # langchain-anthropic declares its optional "timeout" and "stop" aliases as
+    # Field(None, ...), which type checkers do not read as a default
+    return ChatAnthropic(  # type: ignore[call-arg]
+        model_name=settings.anthropic_model,
+        api_key=SecretStr(settings.anthropic_api_key),
         temperature=temperature,
         anthropic_proxy=settings.anthropic_proxy,
     )
@@ -32,26 +38,30 @@ class AgentState(BaseModel):
     """State schema for the RAG agent graph."""
 
     query: str = Field(..., description="Original user query")
-    rephrased_query: Optional[str] = Field(
-        None, description="Optimized query for retrieval"
+    rephrased_query: str | None = Field(
+        default=None, description="Optimized query for retrieval"
     )
-    query_embedding: Optional[List[float]] = Field(
-        None, description="Vector embedding of query"
+    query_embedding: list[float] | None = Field(
+        default=None, description="Vector embedding of query"
     )
-    retrieved_docs: List[Dict[str, Any]] = Field(
+    retrieved_docs: list[dict[str, Any]] = Field(
         default_factory=list, description="Retrieved documents"
     )
-    answer: Optional[str] = Field(None, description="Generated answer")
-    confidence: float = Field(0.0, ge=0.0, le=1.0, description="Confidence score")
-    iterations: int = Field(0, ge=0, description="Current iteration count")
-    should_iterate: bool = Field(False, description="Whether to iterate again")
-    file_id: Optional[str] = Field(
-        None, description="Optional filter for specific document"
+    answer: str | None = Field(default=None, description="Generated answer")
+    confidence: float = Field(
+        default=0.0, ge=0.0, le=1.0, description="Confidence score"
     )
-    max_iterations: int = Field(2, ge=1, le=5, description="Maximum retry attempts")
+    iterations: int = Field(default=0, ge=0, description="Current iteration count")
+    should_iterate: bool = Field(default=False, description="Whether to iterate again")
+    file_id: str | None = Field(
+        default=None, description="Optional filter for specific document"
+    )
+    max_iterations: int = Field(
+        default=2, ge=1, le=5, description="Maximum retry attempts"
+    )
 
 
-async def rephrase_query_node(state: AgentState) -> Dict[str, Any]:
+async def rephrase_query_node(state: AgentState) -> dict[str, Any]:
     """
     Rephrase the user query to optimize it for retrieval.
 
@@ -75,14 +85,14 @@ IMPORTANT: Maintain the SAME LANGUAGE as the original query. Do not translate.
 Rephrased Query:"""
 
     response = await llm.ainvoke(rephrase_prompt)
-    rephrased_query = response.content.strip()
+    rephrased_query = response.text.strip()
 
     logger.info(f"Rephrased query: {rephrased_query}")
 
     return {"rephrased_query": rephrased_query}
 
 
-async def embed_query_node(state: AgentState) -> Dict[str, Any]:
+async def embed_query_node(state: AgentState) -> dict[str, Any]:
     """
     Generate embedding for the rephrased query using the embedding service.
     """
@@ -98,7 +108,7 @@ async def embed_query_node(state: AgentState) -> Dict[str, Any]:
     return {"query_embedding": query_embedding}
 
 
-async def retrieve_documents_node(state: AgentState) -> Dict[str, Any]:
+async def retrieve_documents_node(state: AgentState) -> dict[str, Any]:
     """
     Retrieve relevant documents from Weaviate using vector similarity search.
     """
@@ -108,7 +118,7 @@ async def retrieve_documents_node(state: AgentState) -> Dict[str, Any]:
     logger.info(f"Retrieving documents with k={settings.initial_retrieval_k}")
 
     async with get_vector_db_client() as client:
-        collection = client.collections.get("DefaultDocuments")
+        collection = client.collections.get(DEFAULT_COLLECTION_NAME)
 
         if file_id:
             logger.info(f"Filtering by file_id: {file_id}")
@@ -137,6 +147,7 @@ async def retrieve_documents_node(state: AgentState) -> Dict[str, Any]:
                     "content": obj.properties.get("content", ""),
                     "document_name": obj.properties.get("document_name", ""),
                     "page": obj.properties.get("page", 0),
+                    "domain": obj.properties.get("domain", DEFAULT_DOMAIN),
                     "date_created": obj.properties.get("date_created"),
                     "distance": obj.metadata.distance if obj.metadata else None,
                     "similarity_score": 1.0 - obj.metadata.distance
@@ -150,7 +161,34 @@ async def retrieve_documents_node(state: AgentState) -> Dict[str, Any]:
         return {"retrieved_docs": retrieved_docs}
 
 
-async def generate_answer_node(state: AgentState) -> Dict[str, Any]:
+async def rerank_documents_node(state: AgentState) -> dict[str, Any]:
+    """
+    Rerank retrieved documents by relevance using the external reranker service.
+
+    Falls back to the original retrieval order, truncated to `rerank_top_k`, if
+    the reranker service is unavailable or times out, so the pipeline never
+    fails on this step.
+    """
+    query = state.rephrased_query or state.query
+    retrieved_docs = state.retrieved_docs
+
+    logger.info(f"Reranking {len(retrieved_docs)} retrieved documents")
+
+    reranker = RerankerService()
+    try:
+        reranked_docs = await reranker.rerank_async(
+            query, retrieved_docs, top_k=settings.rerank_top_k
+        )
+        logger.info(f"Reranked documents, kept top {len(reranked_docs)}")
+        return {"retrieved_docs": reranked_docs}
+    except grpc.RpcError as exc:
+        logger.warning(
+            f"Reranker service unavailable, falling back to retrieval order: {exc}"
+        )
+        return {"retrieved_docs": retrieved_docs[: settings.rerank_top_k]}
+
+
+async def generate_answer_node(state: AgentState) -> dict[str, Any]:
     """
     Generate an answer using Claude based on the retrieved documents.
     """
@@ -167,7 +205,7 @@ async def generate_answer_node(state: AgentState) -> Dict[str, Any]:
         }
 
     context_parts = []
-    for idx, doc in enumerate(retrieved_docs[:5], 1):
+    for idx, doc in enumerate(retrieved_docs, 1):
         context_parts.append(
             f"Document {idx} (from {doc['document_name']}, page {doc['page']}):\n{doc['content']}\n"
         )
@@ -190,14 +228,14 @@ IMPORTANT: Answer in the SAME LANGUAGE as the user's question. Do not translate 
 Answer:"""
 
     response = await llm.ainvoke(generation_prompt)
-    answer = response.content.strip()
+    answer = response.text.strip()
 
     logger.info(f"Generated answer of length: {len(answer)}")
 
     return {"answer": answer}
 
 
-async def evaluate_answer_node(state: AgentState) -> Dict[str, Any]:
+async def evaluate_answer_node(state: AgentState) -> dict[str, Any]:
     """
     Evaluate the quality of the generated answer and decide if iteration is needed.
     """
@@ -235,10 +273,10 @@ Confidence Score:"""
     response = await llm.ainvoke(evaluation_prompt)
 
     try:
-        confidence = float(response.content.strip())
+        confidence = float(response.text.strip())
         confidence = max(0.0, min(1.0, confidence))
     except ValueError:
-        logger.warning(f"Could not parse confidence score: {response.content}")
+        logger.warning(f"Could not parse confidence score: {response.text}")
         confidence = 0.5
 
     logger.info(f"Evaluated confidence: {confidence}")
@@ -268,7 +306,7 @@ def should_continue(state: AgentState) -> Literal["rephrase_query", "end"]:
         return "end"
 
 
-def build_agent_graph() -> StateGraph:
+def build_agent_graph() -> CompiledStateGraph[AgentState, None, AgentState, AgentState]:
     """
     Build and compile the LangGraph agent workflow.
     """
@@ -277,6 +315,7 @@ def build_agent_graph() -> StateGraph:
     workflow.add_node("rephrase_query", rephrase_query_node)
     workflow.add_node("embed_query", embed_query_node)
     workflow.add_node("retrieve_documents", retrieve_documents_node)
+    workflow.add_node("rerank_documents", rerank_documents_node)
     workflow.add_node("generate_answer", generate_answer_node)
     workflow.add_node("evaluate_answer", evaluate_answer_node)
 
@@ -284,7 +323,8 @@ def build_agent_graph() -> StateGraph:
 
     workflow.add_edge("rephrase_query", "embed_query")
     workflow.add_edge("embed_query", "retrieve_documents")
-    workflow.add_edge("retrieve_documents", "generate_answer")
+    workflow.add_edge("retrieve_documents", "rerank_documents")
+    workflow.add_edge("rerank_documents", "generate_answer")
     workflow.add_edge("generate_answer", "evaluate_answer")
 
     workflow.add_conditional_edges(
@@ -315,7 +355,7 @@ async def query_documents(request: QueryRequest) -> AgentQueryResponse:
 
     agent = build_agent_graph()
 
-    final_state = await agent.ainvoke(initial_state.model_dump())
+    final_state = await agent.ainvoke(initial_state)
 
     return AgentQueryResponse(
         query=request.query,

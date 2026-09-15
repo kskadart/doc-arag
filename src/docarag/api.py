@@ -28,7 +28,9 @@ from src.docarag.settings import settings
 from src.docarag.services import (
     process_upload,
     create_default_collection,
+    delete_objects_by_document_name,
 )
+from src.docarag.consts import DEFAULT_COLLECTION_NAME
 from src.docarag.tasks import run_embedding_task
 from src.docarag.task_progress import get_task
 
@@ -80,12 +82,13 @@ async def delete_document(
     document_id: str, all_files: list[dict] = Depends(get_all_files)
 ):
     """
-    Delete an uploaded file from MinIO storage by document_id.
+    Delete an uploaded file from MinIO storage and the vector database.
 
-    This will remove all files associated with the given document_id.
+    This will remove all files associated with the given document_id together
+    with every chunk embedded from them.
     """
-    file_exists = any(f["file_id"] == document_id for f in all_files)
-    if not file_exists:
+    document_files = [f for f in all_files if f["file_id"] == document_id]
+    if not document_files:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No file found with ID: {document_id}",
@@ -94,10 +97,19 @@ async def delete_document(
         client = get_minio_client()
         deleted_count = delete_file_by_id(client, settings.minio_bucket, document_id)
 
+        deleted_chunks = 0
+        for file_info in document_files:
+            deleted_chunks += await delete_objects_by_document_name(
+                DEFAULT_COLLECTION_NAME, file_info["filename"]
+            )
+
         return DeleteResponse(
             file_id=document_id,
             status="deleted",
-            message=f"Successfully deleted {deleted_count} file(s) with ID: {document_id}",
+            message=(
+                f"Successfully deleted {deleted_count} file(s) "
+                f"and {deleted_chunks} chunk(s) with ID: {document_id}"
+            ),
         )
 
     except HTTPException:
@@ -292,7 +304,7 @@ async def upload_document_endpoint(
     """
     Upload a document to the service storage.
 
-    Supported file types: PDF, DOC, DOCX.
+    Supported file types: PDF, DOC, DOCX, MD.
     """
     try:
         upload_result = await process_upload(upload_request)

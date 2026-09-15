@@ -41,6 +41,10 @@ class Settings(BaseSettings):
 
     chunk_size: int = 512
     chunk_overlap: int = 64
+    # Markdown is split by headers, so a section needs a larger budget than a
+    # PDF page slice; 900 characters stay under the 512-token embedding limit
+    md_chunk_size: int = 900
+    md_chunk_overlap: int = 100
     max_file_size_mb: int = 50
 
     initial_retrieval_k: int = 20
@@ -63,4 +67,5 @@ class Settings(BaseSettings):
     reranker_timeout: int = 30
 
 
-settings = Settings()
+# Required fields are supplied by the environment, not by the call site
+settings = Settings()  # type: ignore[call-arg]

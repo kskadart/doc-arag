@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package reranker;
+
+// Request to score a query against a batch of candidate texts
+message RerankRequest {
+  string query = 1;
+  repeated string texts = 2;
+}
+
+// Relevance scores, in the same order as RerankRequest.texts
+message RerankResponse {
+  repeated float scores = 1;
+}
+
+// Empty request
+message Empty {}
+
+// Health response
+message HealthResponse {
+  string status = 1;      // e.g., "SERVING"
+  string model_name = 2;  // underlying model identifier
+  string device = 3;      // cpu / cuda
+}
+
+// Reranker gRPC service definition
+service RerankerService {
+  rpc Rerank(RerankRequest) returns (RerankResponse);
+  rpc HealthCheck(Empty) returns (HealthResponse);
+}

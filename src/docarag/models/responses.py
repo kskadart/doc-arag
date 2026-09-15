@@ -2,6 +2,8 @@ from typing import List, Optional
 from datetime import datetime
 from pydantic import BaseModel, Field
 
+from src.docarag.consts import DEFAULT_DOMAIN
+
 
 class HealthResponse(BaseModel):
     """Health check response."""
@@ -158,6 +160,9 @@ class VectorSearchResult(BaseModel):
     document_name: str = Field(..., description="Name of the document")
     page: int = Field(..., description="Page number within the document")
     content: str = Field(..., description="Text content of the document chunk")
+    domain: str = Field(
+        default=DEFAULT_DOMAIN, description="Knowledge domain of the document chunk"
+    )
     date_created: datetime = Field(
         ..., description="Date and time the document chunk was created"
     )
