@@ -1,8 +1,18 @@
 from contextlib import asynccontextmanager
+import asyncio
 import logging
 import datetime
 import uuid
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Depends, status
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    BackgroundTasks,
+    Path,
+    Query,
+    Depends,
+    status,
+)
+from src.docarag.errors import SessionStoreError
 from src.docarag.models import (
     ScrapeRequest,
     QueryRequest,
@@ -12,6 +22,9 @@ from src.docarag.models import (
     AgentQueryResponse,
     DeleteResponse,
     HealthResponse,
+    SessionDeleteResponse,
+    SessionHistoryResponse,
+    SessionMessage,
     UploadedFileResponse,
     UploadedFilesListResponse,
     TaskStatusResponse,
@@ -28,10 +41,18 @@ from src.docarag.settings import settings
 from src.docarag.services import (
     process_upload,
     create_default_collection,
+    create_session_collection,
     delete_objects_by_document_name,
+    run_session_cleanup_loop,
+    sweep_expired_sessions,
     verify_embedding_dimension,
 )
-from src.docarag.consts import DEFAULT_COLLECTION_NAME
+from src.docarag.services.sessions import get_session_store
+from src.docarag.consts import (
+    DEFAULT_COLLECTION_NAME,
+    SESSION_ID_MAX_LENGTH,
+    SESSION_ID_PATTERN,
+)
 from src.docarag.tasks import run_embedding_task
 from src.docarag.task_progress import get_task
 
@@ -43,10 +64,20 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     await check_vector_db_connection()
     await create_default_collection()
+    await create_session_collection()
     if settings.startup_verify_embedding_dimension:
         await verify_embedding_dimension()
+    await sweep_expired_sessions()
+
+    cleanup_task: asyncio.Task[None] | None = None
+    if settings.session_cleanup_interval_minutes > 0:
+        cleanup_task = asyncio.create_task(run_session_cleanup_loop())
 
     yield
+
+    if cleanup_task is not None:
+        cleanup_task.cancel()
+        await asyncio.gather(cleanup_task, return_exceptions=True)
 
 
 app = FastAPI(
@@ -231,6 +262,67 @@ async def query_documents_endpoint(request: QueryRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error processing query: {str(e)}",
         )
+
+
+SessionIdPath = Path(
+    ...,
+    pattern=SESSION_ID_PATTERN,
+    max_length=SESSION_ID_MAX_LENGTH,
+    description="Chat identifier as sent in /query",
+)
+
+
+@app.get(
+    "/sessions/{session_id}", response_model=SessionHistoryResponse, tags=["Sessions"]
+)
+async def get_session_history(session_id: str = SessionIdPath):
+    """
+    Return the stored history of a chat session, oldest message first.
+
+    Assistant messages carry the standalone query that was embedded, the
+    evaluator confidence and the documents used as context. Sessions expire
+    after `SESSION_TTL_DAYS`.
+    """
+    try:
+        stored = await get_session_store().load(
+            session_id, settings.session_max_stored_messages
+        )
+    except SessionStoreError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Session store unavailable: {exc}",
+        )
+    if stored is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session not found: {session_id}",
+        )
+    return SessionHistoryResponse(
+        session_id=session_id,
+        message_count=len(stored.messages),
+        summary=stored.summary,
+        summary_covers_messages=stored.summary_covers_messages,
+        created_at=stored.created_at,
+        updated_at=stored.updated_at,
+        messages=[SessionMessage(**turn.model_dump()) for turn in stored.messages],
+    )
+
+
+@app.delete(
+    "/sessions/{session_id}", response_model=SessionDeleteResponse, tags=["Sessions"]
+)
+async def delete_session(session_id: str = SessionIdPath):
+    """Forget a chat session. Idempotent: an unknown session yields 0 deleted rows."""
+    try:
+        deleted = await get_session_store().delete(session_id)
+    except SessionStoreError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Session store unavailable: {exc}",
+        )
+    return SessionDeleteResponse(
+        session_id=session_id, status="deleted", deleted_messages=deleted
+    )
 
 
 @app.post("/scrappings", response_model=ScrapeResponse, tags=["Documents"])

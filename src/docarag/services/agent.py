@@ -4,8 +4,8 @@ import logging
 import re
 from typing import Any, Literal
 
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
-from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
 from weaviate.classes.query import Filter, MetadataQuery
@@ -15,9 +15,17 @@ from src.docarag.consts import DEFAULT_COLLECTION_NAME, DEFAULT_DOMAIN
 from src.docarag.errors import RerankerError
 from src.docarag.models.requests import QueryRequest
 from src.docarag.models.responses import AgentQueryResponse, SourceChunk
+from src.docarag.models.sessions import ChatTurn
 from src.docarag.services.embeddings import get_embedding_service
 from src.docarag.services.llm import get_chat_model
 from src.docarag.services.reranker import get_reranker_service
+from src.docarag.services.sessions import (
+    format_history_transcript,
+    history_to_messages,
+    load_memory,
+    record_turn,
+    schedule_summary_refresh,
+)
 from src.docarag.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -33,6 +41,7 @@ GENERATION_SYSTEM_PROMPT = """Ты — ассистент оператора к�
 - Для процедур перечисляй шаги по порядку, нумерованным списком, ничего не пропуская.
 - Если точных данных нет (например, конкретной стоимости или фамилии), прямо скажи, что в базе знаний их нет, и ОБЯЗАТЕЛЬНО добавь то, что база знаний говорит по этому вопросу: как это устроено, где посмотреть, кто отвечает, какой речевой модуль использовать. Не называй никаких сумм и фамилий.
 - Сохраняй формулировки базы знаний: названия модулей, вкладок, подразделений, ролей, шагов и речевые модули приводи дословно.
+- Разговор может продолжать прежнюю тему: учитывай предыдущие реплики и сводку, оставайся последовательным с уже сказанным, но никогда не противоречь контексту.
 - Не пиши вступлений вроде «На основании предоставленных документов» и не ссылайся на «Фрагмент N» — сразу давай ответ."""
 
 
@@ -41,7 +50,24 @@ class AgentState(BaseModel):
 
     query: str = Field(..., description="Original user query")
     rephrased_query: str | None = Field(
-        default=None, description="Optimized query for retrieval"
+        default=None,
+        description=(
+            "Standalone query resolved against the conversation; this is what "
+            "gets embedded, reranked and evaluated"
+        ),
+    )
+    session_id: str | None = Field(
+        default=None, description="Chat the query belongs to"
+    )
+    history: list[ChatTurn] = Field(
+        default_factory=list, description="Verbatim tail of the conversation"
+    )
+    history_summary: str | None = Field(
+        default=None, description="Rolling summary of turns older than the tail"
+    )
+    previous_queries: list[str] = Field(
+        default_factory=list,
+        description="Standalone queries already tried in this run",
     )
     query_embedding: list[float] | None = Field(
         default=None, description="Vector embedding of query"
@@ -66,35 +92,70 @@ class AgentState(BaseModel):
     )
 
 
+CONDENSE_SYSTEM_PROMPT = """You rewrite an operator's latest message into ONE standalone search query for a document retrieval system used by customer-support operators.
+
+Rules:
+- Resolve pronouns, ellipsis and references using the conversation below ("how much does it cost?" -> "cost of <the service discussed>").
+- If the latest message asks about a previous answer ("repeat the second point", "explain that in more detail"), build the query from the TOPIC of that answer.
+- If the message is already self-contained, only optimise it for semantic search: specific, key nouns, service names, document terms.
+- Keep it short and focused on the key information need.
+- Do NOT answer the question, do NOT explain, do NOT add quotes or prefixes.
+- Write the query in the SAME LANGUAGE as the latest message. Never translate.
+Output the query and nothing else."""
+
+
+def build_condense_prompt(state: AgentState) -> str:
+    """Human part of the condense prompt: summary, transcript, latest message."""
+    transcript = format_history_transcript(
+        state.history, settings.session_message_max_chars
+    )
+    parts = [
+        f"Conversation summary so far:\n{state.history_summary or '(none)'}",
+        f"Recent conversation:\n{transcript or '(none)'}",
+        f"Latest operator message:\n{state.query}",
+    ]
+    if state.previous_queries:
+        tried = "\n".join(
+            f"{idx}. {query}" for idx, query in enumerate(state.previous_queries, 1)
+        )
+        parts.append(
+            "These search queries were already tried and the answer was not good "
+            f"enough:\n{tried}\n\n"
+            "Produce a DIFFERENT formulation of the same information need: use "
+            "synonyms, spell out abbreviations, add the domain term an internal "
+            "document would use, or narrow to the single most important part of "
+            "the question. Do not repeat any query listed above.\n\n"
+            "Alternative standalone search query:"
+        )
+    else:
+        parts.append("Standalone search query:")
+    return "\n\n".join(parts)
+
+
 async def rephrase_query_node(state: AgentState) -> dict[str, Any]:
     """
-    Rephrase the user query to optimize it for retrieval.
+    Turn the latest message into a standalone query for retrieval.
 
-    Uses the configured LLM to reformulate the query for better semantic search results.
+    Follow-ups are resolved against the conversation; on a retry the LLM is
+    asked for a formulation different from the ones already tried.
     """
-    query = state.query
-    iterations = state.iterations
-
-    logger.info(f"Rephrasing query (iteration {iterations}): {query}")
+    logger.info(f"Condensing query (iteration {state.iterations}): {state.query}")
 
     llm = get_chat_model(0.3)
+    response = await llm.ainvoke(
+        [
+            SystemMessage(content=CONDENSE_SYSTEM_PROMPT),
+            HumanMessage(content=build_condense_prompt(state)),
+        ]
+    )
+    rephrased_query = response.text.strip() or state.query
 
-    rephrase_prompt = f"""You are a query optimization assistant. Your task is to rephrase the user's question to make it more effective for semantic search in a document database.
+    logger.info(f"Standalone query: {rephrased_query}")
 
-User Query: {query}
-
-Rephrase this query to be more specific, clear, and optimized for finding relevant information in technical documents. Keep it concise and focused on the key information needs.
-
-IMPORTANT: Maintain the SAME LANGUAGE as the original query. Do not translate.
-
-Rephrased Query:"""
-
-    response = await llm.ainvoke(rephrase_prompt)
-    rephrased_query = response.text.strip()
-
-    logger.info(f"Rephrased query: {rephrased_query}")
-
-    return {"rephrased_query": rephrased_query}
+    return {
+        "rephrased_query": rephrased_query,
+        "previous_queries": [*state.previous_queries, rephrased_query],
+    }
 
 
 async def embed_query_node(state: AgentState) -> dict[str, Any]:
@@ -231,12 +292,20 @@ async def generate_answer_node(state: AgentState) -> dict[str, Any]:
 
 Ответ:"""
 
-    response = await llm.ainvoke(
-        [
-            SystemMessage(content=GENERATION_SYSTEM_PROMPT),
-            HumanMessage(content=generation_prompt),
-        ]
-    )
+    system_prompt = GENERATION_SYSTEM_PROMPT
+    if state.history_summary:
+        system_prompt = (
+            f"{GENERATION_SYSTEM_PROMPT}\n\n"
+            f"Сводка предыдущего разговора с оператором:\n{state.history_summary}"
+        )
+
+    messages: list[BaseMessage] = [
+        SystemMessage(content=system_prompt),
+        *history_to_messages(state.history, settings.session_message_max_chars),
+        HumanMessage(content=generation_prompt),
+    ]
+
+    response = await llm.ainvoke(messages)
     answer = response.text.strip()
 
     logger.info(f"Generated answer of length: {len(answer)}")
@@ -257,7 +326,8 @@ async def evaluate_answer_node(state: AgentState) -> dict[str, Any]:
     Evaluate the quality of the generated answer and decide if iteration is needed.
     """
     answer = state.answer
-    query = state.query
+    # A follow-up like "and for companies?" only makes sense once resolved
+    query = state.rephrased_query or state.query
     iterations = state.iterations
     max_iterations = state.max_iterations
     retrieved_docs = state.retrieved_docs
@@ -272,9 +342,9 @@ async def evaluate_answer_node(state: AgentState) -> dict[str, Any]:
 
     llm = get_chat_model(0.1)
 
-    evaluation_prompt = f"""You are an answer quality evaluator. Assess how well the given answer addresses the user's question.
+    evaluation_prompt = f"""You are an answer quality evaluator. Assess how well the given answer addresses the operator's question.
 
-User Question: {query}
+Question (resolved against the conversation): {query}
 
 Answer: {answer}
 
@@ -359,14 +429,22 @@ async def query_documents(request: QueryRequest) -> AgentQueryResponse:
     Main entry point for querying documents using the RAG agent.
 
     Builds the agent graph, executes it with the query, and returns a structured response with generated answer.
+
+    With a `session_id` the conversation memory is loaded first and both turns
+    are persisted afterwards; without one the run is fully stateless.
     """
     logger.info(f"Processing query: {request.query}")
+
+    memory = await load_memory(request.session_id)
 
     initial_state = AgentState(
         query=request.query,
         file_id=None,
         domain=request.domain,
         max_iterations=request.max_iterations,
+        session_id=request.session_id,
+        history=memory.recent,
+        history_summary=memory.summary,
     )
 
     agent = build_agent_graph()
@@ -374,7 +452,7 @@ async def query_documents(request: QueryRequest) -> AgentQueryResponse:
     final_state = await agent.ainvoke(initial_state)
     retrieved_docs = final_state.get("retrieved_docs", [])
 
-    return AgentQueryResponse(
+    response = AgentQueryResponse(
         query=request.query,
         answer=final_state.get("answer", "Unable to generate an answer."),
         rephrased_query=final_state.get("rephrased_query"),
@@ -382,7 +460,13 @@ async def query_documents(request: QueryRequest) -> AgentQueryResponse:
         iterations=final_state.get("iterations", 0),
         sources_used=len(retrieved_docs),
         sources=[build_source_chunk(doc) for doc in retrieved_docs],
+        session_id=request.session_id,
     )
+
+    if await record_turn(request.session_id, memory, request.query, response):
+        schedule_summary_refresh(request.session_id, memory)
+
+    return response
 
 
 def build_source_chunk(doc: dict[str, Any], snippet_length: int = 200) -> SourceChunk:

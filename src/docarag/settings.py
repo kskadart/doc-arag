@@ -109,6 +109,22 @@ class Settings(BaseSettings):
     rerank_top_k: int = 5
     agent_confidence_threshold: float = 0.7
 
+    # --- Sessions / conversational memory ---------------------------------------
+    # Where chat history lives: the ChatMessages collection in Weaviate (survives
+    # restarts, shared between workers) or process memory (tests, quick runs)
+    session_store: Literal["weaviate", "memory"] = "weaviate"
+    session_ttl_days: int = 7
+    # Verbatim tail handed to the agent (messages, not exchanges)
+    session_history_messages: int = 6
+    # Older turns are folded into a rolling LLM summary once a session is longer
+    session_summary_after_messages: int = 12
+    # Per-message cap when building prompts; stored content is never truncated
+    session_message_max_chars: int = 1200
+    # Read cap per session, newest first
+    session_max_stored_messages: int = 200
+    # Periodic TTL sweep; 0 disables it (the startup sweep still runs)
+    session_cleanup_interval_minutes: int = 60
+
     @staticmethod
     def _is_openrouter(base_url: str | None) -> bool:
         return bool(base_url) and str(base_url).startswith("https://openrouter.ai")
@@ -143,6 +159,26 @@ class Settings(BaseSettings):
             raise ValueError(
                 "reranker_provider=openai-rerank requires RERANKER_BASE_URL"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_sessions(self) -> "Settings":
+        if self.session_summary_after_messages <= self.session_history_messages:
+            raise ValueError(
+                "SESSION_SUMMARY_AFTER_MESSAGES must be greater than "
+                "SESSION_HISTORY_MESSAGES, otherwise the summary would be rebuilt "
+                "on every turn"
+            )
+        for name in (
+            "session_ttl_days",
+            "session_history_messages",
+            "session_message_max_chars",
+            "session_max_stored_messages",
+        ):
+            if getattr(self, name) < 1:
+                raise ValueError(f"{name.upper()} must be at least 1")
+        if self.session_cleanup_interval_minutes < 0:
+            raise ValueError("SESSION_CLEANUP_INTERVAL_MINUTES must be >= 0")
         return self
 
 

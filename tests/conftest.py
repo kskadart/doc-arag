@@ -19,6 +19,7 @@ os.environ.setdefault("MINIO_BUCKET", "test-bucket")
 os.environ.setdefault("MINIO_SECURE", "false")
 os.environ.setdefault("WEAVIATE_HOST", "localhost")
 os.environ.setdefault("WEAVIATE_PORT", "8080")
+os.environ.setdefault("SESSION_STORE", "memory")
 
 mock_rag_agent_module = Mock()
 mock_rag_agent_module.get_rag_agent = Mock()
