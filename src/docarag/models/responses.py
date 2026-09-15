@@ -10,6 +10,25 @@ class HealthResponse(BaseModel):
 
     status: str = Field(..., description="Service status")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+    llm_provider: Optional[str] = Field(None, description="Configured LLM provider")
+    llm_model: Optional[str] = Field(None, description="Configured chat model")
+    embedding_model: Optional[str] = Field(
+        None, description="Configured embedding model"
+    )
+    reranker_provider: Optional[str] = Field(
+        None, description="Configured reranker provider"
+    )
+
+
+class MeResponse(BaseModel):
+    """Who the edge proxy says is calling, and what they may do."""
+
+    username: str = Field(..., description="Login asserted by the proxy")
+    display_name: Optional[str] = Field(None, description="Human-readable name")
+    email: Optional[str] = Field(None, description="E-mail when known")
+    groups: List[str] = Field(default_factory=list, description="Sorted group names")
+    is_admin: bool = Field(..., description="Member of the administrator group")
+    auth_mode: str = Field(..., description="none or trusted-headers")
 
 
 class UploadResponse(BaseModel):
@@ -66,6 +85,18 @@ class QueryResponse(BaseModel):
     total_results: int = Field(..., description="Total number of results returned")
 
 
+class SourceChunk(BaseModel):
+    """A chunk that was given to the LLM as context."""
+
+    document_name: str = Field(..., description="Document the chunk came from")
+    domain: str = Field(DEFAULT_DOMAIN, description="Knowledge domain of the chunk")
+    page: int = Field(0, description="Page or section ordinal inside the document")
+    score: Optional[float] = Field(
+        None, description="Rerank score when reranked, otherwise vector similarity"
+    )
+    snippet: str = Field("", description="Beginning of the chunk text")
+
+
 class AgentQueryResponse(BaseModel):
     """Response for agent-based RAG query with generated answer."""
 
@@ -83,6 +114,55 @@ class AgentQueryResponse(BaseModel):
         ..., ge=0, description="Number of agent iterations performed"
     )
     sources_used: int = Field(..., description="Number of source documents used")
+    sources: List[SourceChunk] = Field(
+        default_factory=list, description="Chunks used as context, best first"
+    )
+    session_id: Optional[str] = Field(
+        None, description="Session the turn was recorded in, when one was given"
+    )
+
+
+class SessionMessage(BaseModel):
+    """One stored message of a chat session."""
+
+    role: str = Field(..., description="user or assistant")
+    content: str = Field(..., description="Message text")
+    created_at: datetime = Field(..., description="When the message was written")
+    turn_index: int = Field(0, description="Position in the session")
+    standalone_query: Optional[str] = Field(
+        None, description="Assistant: the history-resolved query that was embedded"
+    )
+    confidence: Optional[float] = Field(None, description="Assistant: evaluator score")
+    source_documents: List[str] = Field(
+        default_factory=list, description="Assistant: documents used as context"
+    )
+    source_domains: List[str] = Field(
+        default_factory=list, description="Assistant: domains of those documents"
+    )
+
+
+class SessionHistoryResponse(BaseModel):
+    """Full history of a chat session, oldest first."""
+
+    session_id: str = Field(..., description="Session identifier")
+    message_count: int = Field(..., description="Messages returned")
+    summary: Optional[str] = Field(
+        None, description="Rolling summary of turns older than the verbatim window"
+    )
+    summary_covers_messages: int = Field(
+        0, description="Messages folded into the summary"
+    )
+    created_at: Optional[datetime] = Field(None, description="First message time")
+    updated_at: Optional[datetime] = Field(None, description="Last message time")
+    messages: List[SessionMessage] = Field(default_factory=list)
+
+
+class SessionDeleteResponse(BaseModel):
+    """Result of deleting a chat session."""
+
+    session_id: str = Field(..., description="Session identifier")
+    status: str = Field(..., description="Deletion status")
+    deleted_messages: int = Field(..., description="Rows removed, 0 when unknown")
 
 
 class DocumentResponse(BaseModel):

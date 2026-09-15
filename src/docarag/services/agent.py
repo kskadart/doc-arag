@@ -1,37 +1,54 @@
 """LangGraph RAG agent for multi-step document retrieval and question answering."""
 
+import asyncio
 import logging
+import re
 from typing import Any, Literal
 
-import grpc
-from pydantic import BaseModel, Field, SecretStr
-from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
+from weaviate.classes.query import Filter, MetadataQuery
 
 from src.docarag.clients.vector_db_client import get_vector_db_client
-from src.docarag.clients.embedding import EmbeddingGRPCClient
 from src.docarag.consts import DEFAULT_COLLECTION_NAME, DEFAULT_DOMAIN
+from src.docarag.errors import RerankerError
 from src.docarag.models.requests import QueryRequest
-from src.docarag.models.responses import AgentQueryResponse
-from src.docarag.services.reranker import RerankerService
+from src.docarag.models.responses import AgentQueryResponse, SourceChunk
+from src.docarag.models.sessions import ChatTurn
+from src.docarag.services.embeddings import get_embedding_service
+from src.docarag.services.llm import get_chat_model
+from src.docarag.services.reranker import get_reranker_service
+from src.docarag.services.sessions import (
+    format_history_transcript,
+    history_to_messages,
+    load_memory,
+    record_turn,
+    schedule_summary_refresh,
+)
 from src.docarag.settings import settings
 
 logger = logging.getLogger(__name__)
 
+_NUMBER_PATTERN = re.compile(r"\d+(?:\.\d+)?")
 
-def get_anthropic_client(temperature: float = 0.7) -> ChatAnthropic:
-    """
-    Create a ChatAnthropic client with optional proxy support.
-    """
-    # langchain-anthropic declares its optional "timeout" and "stop" aliases as
-    # Field(None, ...), which type checkers do not read as a default
-    return ChatAnthropic(  # type: ignore[call-arg]
-        model_name=settings.anthropic_model,
-        api_key=SecretStr(settings.anthropic_api_key),
-        temperature=temperature,
-        anthropic_proxy=settings.anthropic_proxy,
-    )
+GENERATION_SYSTEM_PROMPT = """Ты — ассистент оператора контакт-центра интернет-провайдера «Эра-Телеком». Отвечаешь на вопросы операторов по внутренней базе знаний.
+
+Правила:
+- Отвечай ТОЛЬКО на русском языке, независимо от языка контекста.
+- Используй только факты из контекста. Не додумывай цены, суммы, сроки, фамилии и названия, которых там нет.
+- Отвечай полно: приведи ВСЕ относящиеся к вопросу шаги, условия, сроки, названия модулей, вкладок, кнопок, подразделений и ролей, которые есть в контексте. Лучше лишняя деталь из базы знаний, чем пропущенная, но только если она относится к той же ситуации, что и вопрос.
+- Бери факт только из фрагмента про ту же программу, услугу или ситуацию. Не переноси навигацию, кнопки и правила из одной программы («Лапа», BG Billing) или ситуации в другую.
+- Не делай выводов, которых нет в тексте: без «подразумевается», «скорее всего», «чаще всего», без собственных советов (обратиться к руководству, в отдел продаж) и без ранжирования причин. Если причин несколько, перечисли их равноправно, каждую с условием из базы знаний.
+- Прежде чем написать, что каких-то сведений в базе знаний нет, проверь все фрагменты: название ресурса, срок или ответственный может быть в другом фрагменте.
+- Для процедур перечисляй шаги по порядку, нумерованным списком, ничего не пропуская.
+- Если точных данных нет (например, конкретной стоимости или фамилии), прямо скажи, что в базе знаний их нет, и ОБЯЗАТЕЛЬНО добавь то, что база знаний говорит по этому вопросу: как это устроено, где посмотреть, кто отвечает, какой речевой модуль использовать. Не называй никаких сумм и фамилий.
+- Сохраняй формулировки базы знаний: названия модулей, вкладок, подразделений, ролей, шагов и речевые модули приводи дословно.
+- Разговор может продолжать прежнюю тему: учитывай предыдущие реплики и сводку, оставайся последовательным с уже сказанным, но никогда не противоречь контексту.
+- Порядок стадий и шагов бери только из их номеров и явных указаний в тексте. Не выводи «следующую» стадию из порядка фрагментов: если она не названа в контексте, не называй её.
+- Если вопрос затрагивает несколько документов (например, что делать и куда дальше уходит обращение, какие сроки), объедини сведения из всех относящихся фрагментов.
+- Не пиши вступлений вроде «На основании предоставленных документов» и не ссылайся на «Фрагмент N» — сразу давай ответ."""
 
 
 class AgentState(BaseModel):
@@ -39,10 +56,31 @@ class AgentState(BaseModel):
 
     query: str = Field(..., description="Original user query")
     rephrased_query: str | None = Field(
-        default=None, description="Optimized query for retrieval"
+        default=None,
+        description=(
+            "Standalone query resolved against the conversation; this is what "
+            "gets embedded, reranked and evaluated"
+        ),
+    )
+    session_id: str | None = Field(
+        default=None, description="Chat the query belongs to"
+    )
+    history: list[ChatTurn] = Field(
+        default_factory=list, description="Verbatim tail of the conversation"
+    )
+    history_summary: str | None = Field(
+        default=None, description="Rolling summary of turns older than the tail"
+    )
+    previous_queries: list[str] = Field(
+        default_factory=list,
+        description="Standalone queries already tried in this run",
     )
     query_embedding: list[float] | None = Field(
-        default=None, description="Vector embedding of query"
+        default=None, description="Vector embedding of the rephrased query"
+    )
+    original_query_embedding: list[float] | None = Field(
+        default=None,
+        description="Vector embedding of the original query, when it differs",
     )
     retrieved_docs: list[dict[str, Any]] = Field(
         default_factory=list, description="Retrieved documents"
@@ -56,40 +94,78 @@ class AgentState(BaseModel):
     file_id: str | None = Field(
         default=None, description="Optional filter for specific document"
     )
+    domain: str | None = Field(
+        default=None, description="Optional filter on the chunk knowledge domain"
+    )
     max_iterations: int = Field(
         default=2, ge=1, le=5, description="Maximum retry attempts"
     )
 
 
+CONDENSE_SYSTEM_PROMPT = """You rewrite an operator's latest message into ONE standalone search query for a document retrieval system used by customer-support operators.
+
+Rules:
+- Resolve pronouns, ellipsis and references using the conversation below ("how much does it cost?" -> "cost of <the service discussed>").
+- If the latest message asks about a previous answer ("repeat the second point", "explain that in more detail"), build the query from the TOPIC of that answer.
+- If the message is already self-contained, only optimise it for semantic search: specific, key nouns, service names, document terms.
+- Keep it short and focused on the key information need.
+- Do NOT answer the question, do NOT explain, do NOT add quotes or prefixes.
+- Write the query in the SAME LANGUAGE as the latest message. Never translate.
+Output the query and nothing else."""
+
+
+def build_condense_prompt(state: AgentState) -> str:
+    """Human part of the condense prompt: summary, transcript, latest message."""
+    transcript = format_history_transcript(
+        state.history, settings.session_message_max_chars
+    )
+    parts = [
+        f"Conversation summary so far:\n{state.history_summary or '(none)'}",
+        f"Recent conversation:\n{transcript or '(none)'}",
+        f"Latest operator message:\n{state.query}",
+    ]
+    if state.previous_queries:
+        tried = "\n".join(
+            f"{idx}. {query}" for idx, query in enumerate(state.previous_queries, 1)
+        )
+        parts.append(
+            "These search queries were already tried and the answer was not good "
+            f"enough:\n{tried}\n\n"
+            "Produce a DIFFERENT formulation of the same information need: use "
+            "synonyms, spell out abbreviations, add the domain term an internal "
+            "document would use, or narrow to the single most important part of "
+            "the question. Do not repeat any query listed above.\n\n"
+            "Alternative standalone search query:"
+        )
+    else:
+        parts.append("Standalone search query:")
+    return "\n\n".join(parts)
+
+
 async def rephrase_query_node(state: AgentState) -> dict[str, Any]:
     """
-    Rephrase the user query to optimize it for retrieval.
+    Turn the latest message into a standalone query for retrieval.
 
-    Uses Claude to reformulate the query for better semantic search results.
+    Follow-ups are resolved against the conversation; on a retry the LLM is
+    asked for a formulation different from the ones already tried.
     """
-    query = state.query
-    iterations = state.iterations
+    logger.info(f"Condensing query (iteration {state.iterations}): {state.query}")
 
-    logger.info(f"Rephrasing query (iteration {iterations}): {query}")
+    llm = get_chat_model(0.3)
+    response = await llm.ainvoke(
+        [
+            SystemMessage(content=CONDENSE_SYSTEM_PROMPT),
+            HumanMessage(content=build_condense_prompt(state)),
+        ]
+    )
+    rephrased_query = response.text.strip() or state.query
 
-    llm = get_anthropic_client(temperature=0.3)
+    logger.info(f"Standalone query: {rephrased_query}")
 
-    rephrase_prompt = f"""You are a query optimization assistant. Your task is to rephrase the user's question to make it more effective for semantic search in a document database.
-
-User Query: {query}
-
-Rephrase this query to be more specific, clear, and optimized for finding relevant information in technical documents. Keep it concise and focused on the key information needs.
-
-IMPORTANT: Maintain the SAME LANGUAGE as the original query. Do not translate.
-
-Rephrased Query:"""
-
-    response = await llm.ainvoke(rephrase_prompt)
-    rephrased_query = response.text.strip()
-
-    logger.info(f"Rephrased query: {rephrased_query}")
-
-    return {"rephrased_query": rephrased_query}
+    return {
+        "rephrased_query": rephrased_query,
+        "previous_queries": [*state.previous_queries, rephrased_query],
+    }
 
 
 async def embed_query_node(state: AgentState) -> dict[str, Any]:
@@ -100,61 +176,84 @@ async def embed_query_node(state: AgentState) -> dict[str, Any]:
 
     logger.info(f"Generating embedding for query: {query_text}")
 
-    embedding_client = EmbeddingGRPCClient()
-    query_embedding = await embedding_client.embed_text_async(query_text)
+    service = get_embedding_service()
+    original_query_embedding: list[float] | None = None
+    if settings.retrieval_use_original_query and query_text != state.query:
+        query_embedding, original_query_embedding = await asyncio.gather(
+            service.embed_text_async(query_text),
+            service.embed_text_async(state.query),
+        )
+    else:
+        query_embedding = await service.embed_text_async(query_text)
 
     logger.info(f"Generated embedding with dimension: {len(query_embedding)}")
 
-    return {"query_embedding": query_embedding}
+    return {
+        "query_embedding": query_embedding,
+        "original_query_embedding": original_query_embedding,
+    }
+
+
+def _build_retrieval_filter(file_id: str | None, domain: str | None) -> Any:
+    """Combine the optional document and domain filters, `None` when both are unset."""
+    filters = None
+    if file_id:
+        filters = Filter.by_property("document_name").equal(file_id)
+    if domain:
+        domain_filter = Filter.by_property("domain").equal(domain)
+        filters = domain_filter if filters is None else filters & domain_filter
+    return filters
 
 
 async def retrieve_documents_node(state: AgentState) -> dict[str, Any]:
     """
     Retrieve relevant documents from Weaviate using vector similarity search.
     """
-    query_embedding = state.query_embedding
-    file_id = state.file_id
+    vectors = [
+        vector
+        for vector in (state.query_embedding, state.original_query_embedding)
+        if vector
+    ]
+    filters = _build_retrieval_filter(state.file_id, state.domain)
 
-    logger.info(f"Retrieving documents with k={settings.initial_retrieval_k}")
+    logger.info(
+        f"Retrieving documents with k={settings.initial_retrieval_k}"
+        f" for {len(vectors)} query vector(s)"
+        + (f", domain={state.domain}" if state.domain else "")
+        + (f", file_id={state.file_id}" if state.file_id else "")
+    )
 
     async with get_vector_db_client() as client:
         collection = client.collections.get(DEFAULT_COLLECTION_NAME)
 
-        if file_id:
-            logger.info(f"Filtering by file_id: {file_id}")
+        by_uuid: dict[str, dict[str, Any]] = {}
+        for vector in vectors:
             response = await collection.query.near_vector(
-                near_vector=query_embedding,
+                near_vector=vector,
                 limit=settings.initial_retrieval_k,
-                return_metadata=["distance"],
-                filters={
-                    "path": ["document_name"],
-                    "operator": "Equal",
-                    "valueText": file_id,
-                },
+                target_vector="content_vector",
+                return_metadata=MetadataQuery(distance=True),
+                filters=filters,
             )
-        else:
-            response = await collection.query.near_vector(
-                near_vector=query_embedding,
-                limit=settings.initial_retrieval_k,
-                return_metadata=["distance"],
-            )
-
-        retrieved_docs = []
-        for obj in response.objects:
-            retrieved_docs.append(
-                {
+            for obj in response.objects:
+                distance = obj.metadata.distance if obj.metadata else None
+                doc = {
                     "uuid": str(obj.uuid),
                     "content": obj.properties.get("content", ""),
                     "document_name": obj.properties.get("document_name", ""),
                     "page": obj.properties.get("page", 0),
                     "domain": obj.properties.get("domain", DEFAULT_DOMAIN),
                     "date_created": obj.properties.get("date_created"),
-                    "distance": obj.metadata.distance if obj.metadata else None,
-                    "similarity_score": 1.0 - obj.metadata.distance
-                    if obj.metadata and obj.metadata.distance
-                    else 0.0,
+                    "distance": distance,
+                    "similarity_score": 1.0 - distance if distance is not None else 0.0,
                 }
-            )
+                known = by_uuid.get(doc["uuid"])
+                if known is None or doc["similarity_score"] > known["similarity_score"]:
+                    by_uuid[doc["uuid"]] = doc
+
+        retrieved_docs = sorted(
+            by_uuid.values(), key=lambda doc: doc["similarity_score"], reverse=True
+        )
 
         logger.info(f"Retrieved {len(retrieved_docs)} documents")
 
@@ -163,25 +262,28 @@ async def retrieve_documents_node(state: AgentState) -> dict[str, Any]:
 
 async def rerank_documents_node(state: AgentState) -> dict[str, Any]:
     """
-    Rerank retrieved documents by relevance using the external reranker service.
+    Rerank retrieved documents by relevance using the configured reranker.
 
-    Falls back to the original retrieval order, truncated to `rerank_top_k`, if
-    the reranker service is unavailable or times out, so the pipeline never
+    Falls back to the original retrieval order, truncated to `rerank_top_k`, when
+    the reranker is disabled, unavailable or answers badly, so the pipeline never
     fails on this step.
     """
     query = state.rephrased_query or state.query
     retrieved_docs = state.retrieved_docs
 
+    if settings.reranker_provider == "none":
+        logger.info("Reranker disabled, keeping retrieval order")
+        return {"retrieved_docs": retrieved_docs[: settings.rerank_top_k]}
+
     logger.info(f"Reranking {len(retrieved_docs)} retrieved documents")
 
-    reranker = RerankerService()
     try:
-        reranked_docs = await reranker.rerank_async(
+        reranked_docs = await get_reranker_service().rerank_async(
             query, retrieved_docs, top_k=settings.rerank_top_k
         )
         logger.info(f"Reranked documents, kept top {len(reranked_docs)}")
         return {"retrieved_docs": reranked_docs}
-    except grpc.RpcError as exc:
+    except RerankerError as exc:
         logger.warning(
             f"Reranker service unavailable, falling back to retrieval order: {exc}"
         )
@@ -190,7 +292,7 @@ async def rerank_documents_node(state: AgentState) -> dict[str, Any]:
 
 async def generate_answer_node(state: AgentState) -> dict[str, Any]:
     """
-    Generate an answer using Claude based on the retrieved documents.
+    Generate an answer using the configured LLM based on the retrieved documents.
     """
     query = state.query
     retrieved_docs = state.retrieved_docs
@@ -207,27 +309,34 @@ async def generate_answer_node(state: AgentState) -> dict[str, Any]:
     context_parts = []
     for idx, doc in enumerate(retrieved_docs, 1):
         context_parts.append(
-            f"Document {idx} (from {doc['document_name']}, page {doc['page']}):\n{doc['content']}\n"
+            f"[Фрагмент {idx}, источник {doc['document_name']}, раздел {doc['page']}]\n{doc['content']}\n"
         )
 
     context = "\n".join(context_parts)
 
-    llm = get_anthropic_client(temperature=settings.anthropic_temperature)
+    llm = get_chat_model(settings.llm_temperature)
 
-    generation_prompt = f"""You are a helpful AI assistant that answers questions based on the provided document context.
-
-Context from documents:
+    generation_prompt = f"""Контекст из базы знаний (фрагменты, лучшие первыми):
 {context}
 
-User Question: {query}
+Вопрос оператора: {query}
 
-Please provide a comprehensive answer based on the context above. If the context doesn't contain enough information to fully answer the question, acknowledge this and provide what information is available.
+Ответ:"""
 
-IMPORTANT: Answer in the SAME LANGUAGE as the user's question. Do not translate the question or answer to another language.
+    system_prompt = GENERATION_SYSTEM_PROMPT
+    if state.history_summary:
+        system_prompt = (
+            f"{GENERATION_SYSTEM_PROMPT}\n\n"
+            f"Сводка предыдущего разговора с оператором:\n{state.history_summary}"
+        )
 
-Answer:"""
+    messages: list[BaseMessage] = [
+        SystemMessage(content=system_prompt),
+        *history_to_messages(state.history, settings.session_message_max_chars),
+        HumanMessage(content=generation_prompt),
+    ]
 
-    response = await llm.ainvoke(generation_prompt)
+    response = await llm.ainvoke(messages)
     answer = response.text.strip()
 
     logger.info(f"Generated answer of length: {len(answer)}")
@@ -235,12 +344,21 @@ Answer:"""
     return {"answer": answer}
 
 
+def parse_confidence(text: str) -> float | None:
+    """Extract the first number from an evaluator reply and clamp it to [0, 1]."""
+    match = _NUMBER_PATTERN.search(text)
+    if match is None:
+        return None
+    return max(0.0, min(1.0, float(match.group())))
+
+
 async def evaluate_answer_node(state: AgentState) -> dict[str, Any]:
     """
     Evaluate the quality of the generated answer and decide if iteration is needed.
     """
     answer = state.answer
-    query = state.query
+    # A follow-up like "and for companies?" only makes sense once resolved
+    query = state.rephrased_query or state.query
     iterations = state.iterations
     max_iterations = state.max_iterations
     retrieved_docs = state.retrieved_docs
@@ -253,11 +371,11 @@ async def evaluate_answer_node(state: AgentState) -> dict[str, Any]:
             "should_iterate": False,
         }
 
-    llm = get_anthropic_client(temperature=0.1)
+    llm = get_chat_model(0.1)
 
-    evaluation_prompt = f"""You are an answer quality evaluator. Assess how well the given answer addresses the user's question.
+    evaluation_prompt = f"""You are an answer quality evaluator. Assess how well the given answer addresses the operator's question.
 
-User Question: {query}
+Question (resolved against the conversation): {query}
 
 Answer: {answer}
 
@@ -272,10 +390,8 @@ Confidence Score:"""
 
     response = await llm.ainvoke(evaluation_prompt)
 
-    try:
-        confidence = float(response.text.strip())
-        confidence = max(0.0, min(1.0, confidence))
-    except ValueError:
+    confidence = parse_confidence(response.text)
+    if confidence is None:
         logger.warning(f"Could not parse confidence score: {response.text}")
         confidence = 0.5
 
@@ -344,24 +460,54 @@ async def query_documents(request: QueryRequest) -> AgentQueryResponse:
     Main entry point for querying documents using the RAG agent.
 
     Builds the agent graph, executes it with the query, and returns a structured response with generated answer.
+
+    With a `session_id` the conversation memory is loaded first and both turns
+    are persisted afterwards; without one the run is fully stateless.
     """
     logger.info(f"Processing query: {request.query}")
+
+    memory = await load_memory(request.session_id)
 
     initial_state = AgentState(
         query=request.query,
         file_id=None,
+        domain=request.domain,
         max_iterations=request.max_iterations,
+        session_id=request.session_id,
+        history=memory.recent,
+        history_summary=memory.summary,
     )
 
     agent = build_agent_graph()
 
     final_state = await agent.ainvoke(initial_state)
+    retrieved_docs = final_state.get("retrieved_docs", [])
 
-    return AgentQueryResponse(
+    response = AgentQueryResponse(
         query=request.query,
         answer=final_state.get("answer", "Unable to generate an answer."),
         rephrased_query=final_state.get("rephrased_query"),
         confidence=final_state.get("confidence", 0.0),
         iterations=final_state.get("iterations", 0),
-        sources_used=len(final_state.get("retrieved_docs", [])),
+        sources_used=len(retrieved_docs),
+        sources=[build_source_chunk(doc) for doc in retrieved_docs],
+        session_id=request.session_id,
+    )
+
+    if await record_turn(request.session_id, memory, request.query, response):
+        schedule_summary_refresh(request.session_id, memory)
+
+    return response
+
+
+def build_source_chunk(doc: dict[str, Any], snippet_length: int = 200) -> SourceChunk:
+    """Expose a retrieved chunk to API clients without the full content."""
+    score = doc.get("rerank_score", doc.get("similarity_score"))
+    content = str(doc.get("content", ""))
+    return SourceChunk(
+        document_name=str(doc.get("document_name", "")),
+        domain=str(doc.get("domain", DEFAULT_DOMAIN)),
+        page=int(doc.get("page") or 0),
+        score=float(score) if score is not None else None,
+        snippet=content[:snippet_length],
     )

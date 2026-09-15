@@ -3,7 +3,10 @@ import pytest
 from unittest.mock import Mock, AsyncMock, patch
 
 from src.docarag.clients.reranker_client import RerankerGRPCClient
-from src.docarag.services.reranker import RerankerService
+from src.docarag.clients.reranker_http import RerankerHTTPClient, RerankResult
+from src.docarag.errors import RerankerError
+from src.docarag.services.reranker import RerankerService, build_reranker_client
+from src.docarag.settings import settings
 
 
 @pytest.fixture
@@ -29,6 +32,19 @@ def test_reranker_service_initialization():
 
         service = RerankerService()
         assert service.client == mock_client
+
+
+def test_build_reranker_client_follows_provider_setting(monkeypatch):
+    """Test that the provider setting selects gRPC, HTTP or nothing."""
+    monkeypatch.setattr(settings, "reranker_provider", "none")
+    assert build_reranker_client() is None
+
+    monkeypatch.setattr(settings, "reranker_provider", "openai-rerank")
+    monkeypatch.setattr(settings, "reranker_base_url", "http://rerank.test/v1")
+    assert isinstance(build_reranker_client(), RerankerHTTPClient)
+
+    monkeypatch.setattr(settings, "reranker_provider", "grpc")
+    assert isinstance(build_reranker_client(), RerankerGRPCClient)
 
 
 @pytest.mark.asyncio
@@ -69,7 +85,7 @@ async def test_rerank_async_applies_top_k_limit(reranker_service, mock_grpc_clie
 async def test_rerank_async_empty_documents_returns_empty_list(
     reranker_service, mock_grpc_client
 ):
-    """Test that reranking an empty document list short-circuits without a gRPC call."""
+    """Test that reranking an empty document list short-circuits without a call."""
     reranked = await reranker_service.rerank_async("query", [], top_k=5)
 
     assert reranked == []
@@ -77,17 +93,71 @@ async def test_rerank_async_empty_documents_returns_empty_list(
 
 
 @pytest.mark.asyncio
-async def test_rerank_async_grpc_error_propagates(reranker_service, mock_grpc_client):
-    """Test that a gRPC failure from the client propagates through the service."""
+async def test_rerank_async_grpc_error_becomes_reranker_error(
+    reranker_service, mock_grpc_client
+):
+    """Test that a gRPC failure is normalised into RerankerError."""
     documents = [{"content": "a", "document_name": "a.md"}]
     mock_grpc_client.rerank_async.side_effect = grpc.RpcError("reranker unreachable")
 
-    with pytest.raises(grpc.RpcError):
+    with pytest.raises(RerankerError, match="reranker unreachable"):
         await reranker_service.rerank_async("query", documents, top_k=5)
 
 
 @pytest.mark.asyncio
+async def test_rerank_async_grpc_score_count_mismatch_raises(
+    reranker_service, mock_grpc_client
+):
+    """Test that a wrong-length score list is rejected instead of mis-zipped."""
+    documents = [{"content": "a"}, {"content": "b"}]
+    mock_grpc_client.rerank_async.return_value = [0.5]
+
+    with pytest.raises(RerankerError, match="1 scores for 2 texts"):
+        await reranker_service.rerank_async("query", documents, top_k=5)
+
+
+@pytest.mark.asyncio
+async def test_rerank_async_maps_http_result_index_back_to_document():
+    """Test that HTTP (index, score) results are mapped onto the right documents."""
+    client = Mock(spec=RerankerHTTPClient)
+    client.rerank_async = AsyncMock(
+        return_value=[RerankResult(2, 0.95), RerankResult(0, 0.2)]
+    )
+    service = RerankerService(client=client)
+    documents = [{"content": "a"}, {"content": "b"}, {"content": "c"}]
+
+    reranked = await service.rerank_async("query", documents, top_k=5)
+
+    assert [doc["content"] for doc in reranked] == ["c", "a"]
+    assert reranked[0]["rerank_score"] == 0.95
+    client.rerank_async.assert_awaited_once_with("query", ["a", "b", "c"], 5)
+
+
+@pytest.mark.asyncio
+async def test_rerank_async_out_of_range_index_raises():
+    """Test that an index outside the document list is an error."""
+    client = Mock(spec=RerankerHTTPClient)
+    client.rerank_async = AsyncMock(return_value=[RerankResult(7, 0.5)])
+    service = RerankerService(client=client)
+
+    with pytest.raises(RerankerError, match="out of range"):
+        await service.rerank_async("query", [{"content": "a"}], top_k=5)
+
+
+@pytest.mark.asyncio
+async def test_rerank_async_disabled_provider_raises():
+    """Test that a service without a client reports the reranker as disabled."""
+    with patch(
+        "src.docarag.services.reranker.build_reranker_client", return_value=None
+    ):
+        service = RerankerService()
+
+    with pytest.raises(RerankerError, match="disabled"):
+        await service.rerank_async("query", [{"content": "a"}], top_k=5)
+
+
+@pytest.mark.asyncio
 async def test_close_async(reranker_service, mock_grpc_client):
-    """Test that closing the service closes the underlying gRPC client."""
+    """Test that closing the service closes the underlying client."""
     await reranker_service.close_async()
     mock_grpc_client.close_async.assert_called_once()

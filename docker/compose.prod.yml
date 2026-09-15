@@ -1,26 +1,47 @@
 services:
   api:
-    image: ${IMAGE_TAG:-ghcr.io/kskada/doc-arag:latest}
+    image: ${IMAGE_TAG:-ghcr.io/kskadart/doc-arag:latest}
     container_name: doc-arag
+    # Loopback only: Docker bypasses ufw, so a public binding would expose the api.
+    # Caddy reaches it over arag-common-network; admins use an SSH tunnel.
     ports:
-      - "8103:8103"
+      - "127.0.0.1:8103:8103"
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-3-haiku-20240307}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://openrouter.ai/api/v1}
+      - LLM_API_KEY=${LLM_API_KEY:-EMPTY}
+      - LLM_MODEL=${LLM_MODEL:-qwen/qwen3.8-flash}
+      # Qwen3.8-flash on OpenRouter reasons by default (~150 s per answer, 5x cost)
+      - 'LLM_EXTRA_BODY=${LLM_EXTRA_BODY:-{"reasoning": {"enabled": false}}}'
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-}
       - ANTHROPIC_PROXY_URL=${ANTHROPIC_PROXY_URL:-}
       - ANTHROPIC_PROXY_USER=${ANTHROPIC_PROXY_USER:-}
       - ANTHROPIC_PROXY_PASS=${ANTHROPIC_PROXY_PASS:-}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-https://openrouter.ai/api/v1}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-EMPTY}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen/qwen3-embedding-8b}
+      # Pin fast full-precision providers: OpenRouter otherwise routes some calls to one taking ~25 s
+      - 'EMBEDDING_EXTRA_BODY=${EMBEDDING_EXTRA_BODY:-{"provider": {"order": ["nebius", "deepinfra"], "allow_fallbacks": false}}}'
+      - RERANKER_PROVIDER=${RERANKER_PROVIDER:-openai-rerank}
+      - RERANKER_SERVICE_URL=${RERANKER_SERVICE_URL:-reranker-service:8352}
+      - RERANKER_BASE_URL=${RERANKER_BASE_URL:-https://openrouter.ai/api/v1}
+      - RERANKER_API_KEY=${RERANKER_API_KEY:-EMPTY}
+      - RERANKER_MODEL=${RERANKER_MODEL:-qwen/qwen3-reranker-8b}
+      - RERANK_TOP_K=${RERANK_TOP_K:-8}
       - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
       - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-docarag-root-user}
       - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-default-password}
       - MINIO_BUCKET=${MINIO_BUCKET:-default-documents}
       - WEAVIATE_HOST=weaviate
       - WEAVIATE_PORT=8080
-      - EMBEDDING_SERVICE_URL=embedding-service:8351
-      - RERANKER_MODEL_NAME=cross-encoder/ms-marco-MiniLM-L-6-v2
+      - AUTH_TRUSTED_HEADERS=${AUTH_TRUSTED_HEADERS:-true}
+      - AUTH_PROXY_SECRET=${AUTH_PROXY_SECRET:-}
+      - AUTH_ADMIN_GROUP=${AUTH_ADMIN_GROUP:-admins}
     healthcheck:
       test: [
         "CMD", "python", "-c", "import urllib.request; \
@@ -39,11 +60,11 @@ services:
       - arag-network
 
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: doc-arag-minio
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - minio-data:/data
     environment:
@@ -60,10 +81,12 @@ services:
       - arag-network
 
   weaviate:
-    image: semitechnologies/weaviate:latest
+    image: semitechnologies/weaviate:1.39.0
     container_name: doc-arag-weaviate
+    # Loopback only: anonymous access is enabled, it must never face the internet.
+    # scripts/load_corpus reads object counts from it through an SSH tunnel.
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - weaviate-data:/var/lib/weaviate
     environment:

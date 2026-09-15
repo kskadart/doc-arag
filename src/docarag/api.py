@@ -1,8 +1,19 @@
 from contextlib import asynccontextmanager
+import asyncio
 import logging
 import datetime
 import uuid
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Depends, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    HTTPException,
+    Path,
+    Query,
+    status,
+)
+from src.docarag.errors import SessionStoreError
 from src.docarag.models import (
     ScrapeRequest,
     QueryRequest,
@@ -12,11 +23,21 @@ from src.docarag.models import (
     AgentQueryResponse,
     DeleteResponse,
     HealthResponse,
+    MeResponse,
+    SessionDeleteResponse,
+    SessionHistoryResponse,
+    SessionMessage,
     UploadedFileResponse,
     UploadedFilesListResponse,
     TaskStatusResponse,
 )
 from src.docarag.dependencies import upload_dependencies, get_all_files
+from src.docarag.auth import (
+    CurrentUser,
+    auth_mode,
+    get_current_user,
+    require_admin,
+)
 from src.docarag.clients import (
     check_vector_db_connection,
     get_minio_client,
@@ -28,9 +49,18 @@ from src.docarag.settings import settings
 from src.docarag.services import (
     process_upload,
     create_default_collection,
+    create_session_collection,
     delete_objects_by_document_name,
+    run_session_cleanup_loop,
+    sweep_expired_sessions,
+    verify_embedding_dimension,
 )
-from src.docarag.consts import DEFAULT_COLLECTION_NAME
+from src.docarag.services.sessions import get_session_store
+from src.docarag.consts import (
+    DEFAULT_COLLECTION_NAME,
+    SESSION_ID_MAX_LENGTH,
+    SESSION_ID_PATTERN,
+)
 from src.docarag.tasks import run_embedding_task
 from src.docarag.task_progress import get_task
 
@@ -41,30 +71,26 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await check_vector_db_connection()
-    # await delete_collection("DefaultDocuments")
     await create_default_collection()
-    # vector_db_service = get_vectorstore_service()
-    # vector_db_service.create_schema(embedding_dimension=embedding_dim)
+    await create_session_collection()
+    if settings.startup_verify_embedding_dimension:
+        await verify_embedding_dimension()
+    if not settings.auth_trusted_headers:
+        logger.warning(
+            "AUTH_TRUSTED_HEADERS=false: login disabled, every caller is an "
+            "anonymous administrator"
+        )
+    await sweep_expired_sessions()
 
-    # # Initialize embedding service (establishes gRPC connection)
-    # embedding_service = get_embedding_service()
-    # embedding_dim = await embedding_service.get_embedding_dimension_async()
-
-    # # Initialize reranker service
-    # # reranker_service = get_reranker_service()
-    # # reranker_service.load_model()
-
-    # # Initialize vector store schema
-    # vectorstore = get_vectorstore_service()
-    # vectorstore.create_schema(embedding_dimension=embedding_dim)
-
-    # _ = get_rag_agent()
+    cleanup_task: asyncio.Task[None] | None = None
+    if settings.session_cleanup_interval_minutes > 0:
+        cleanup_task = asyncio.create_task(run_session_cleanup_loop())
 
     yield
 
-    # # Cleanup
-    # vectorstore.close()
-    # await embedding_service.close_async()
+    if cleanup_task is not None:
+        cleanup_task.cancel()
+        await asyncio.gather(cleanup_task, return_exceptions=True)
 
 
 app = FastAPI(
@@ -74,8 +100,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Authorization is declared once per router, not per handler, so a route added
+# here is guarded by construction. Only /health stays on the bare app.
+user_router = APIRouter(dependencies=[Depends(get_current_user)])
+admin_router = APIRouter(dependencies=[Depends(require_admin)])
 
-@app.delete(
+
+@admin_router.delete(
     "/documents/{document_id}", response_model=DeleteResponse, tags=["Documents"]
 )
 async def delete_document(
@@ -121,7 +152,9 @@ async def delete_document(
         )
 
 
-@app.get("/documents", response_model=UploadedFilesListResponse, tags=["Documents"])
+@admin_router.get(
+    "/documents", response_model=UploadedFilesListResponse, tags=["Documents"]
+)
 async def list_documents(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(10, ge=1, le=100, description="Items per page"),
@@ -171,7 +204,7 @@ async def list_documents(
         )
 
 
-@app.post(
+@admin_router.post(
     "/embeddings/{document_id}", response_model=EmbeddingResponse, tags=["Embedding"]
 )
 async def generate_embeddings(
@@ -214,10 +247,32 @@ async def generate_embeddings(
 @app.get("/health", response_model=HealthResponse, tags=["Services"])
 async def health_check():
     """Health check endpoint."""
-    return HealthResponse(status="ok", timestamp=datetime.datetime.now(datetime.UTC))
+    return HealthResponse(
+        status="ok",
+        timestamp=datetime.datetime.now(datetime.UTC),
+        llm_provider=settings.llm_provider,
+        llm_model=settings.llm_model
+        if settings.llm_provider == "openai"
+        else settings.anthropic_model,
+        embedding_model=settings.embedding_model,
+        reranker_provider=settings.reranker_provider,
+    )
 
 
-@app.post("/query", response_model=AgentQueryResponse, tags=["Query"])
+@user_router.get("/me", response_model=MeResponse, tags=["Services"])
+async def me(user: CurrentUser = Depends(get_current_user)):
+    """The caller as asserted by the edge proxy; lets the UI adapt to the role."""
+    return MeResponse(
+        username=user.username,
+        display_name=user.display_name,
+        email=user.email,
+        groups=sorted(user.groups),
+        is_admin=user.is_admin,
+        auth_mode=auth_mode(),
+    )
+
+
+@user_router.post("/query", response_model=AgentQueryResponse, tags=["Query"])
 async def query_documents_endpoint(request: QueryRequest):
     """
     Query the document collection using the RAG agent.
@@ -225,7 +280,7 @@ async def query_documents_endpoint(request: QueryRequest):
     The agent will:
     1. Understand and rephrase the query
     2. Retrieve relevant documents using vector search
-    3. Generate an answer using Claude
+    3. Generate an answer using the configured LLM
     4. Evaluate and potentially iterate
 
     Returns the agent's generated answer with confidence score and metadata.
@@ -242,7 +297,68 @@ async def query_documents_endpoint(request: QueryRequest):
         )
 
 
-@app.post("/scrappings", response_model=ScrapeResponse, tags=["Documents"])
+SessionIdPath = Path(
+    ...,
+    pattern=SESSION_ID_PATTERN,
+    max_length=SESSION_ID_MAX_LENGTH,
+    description="Chat identifier as sent in /query",
+)
+
+
+@user_router.get(
+    "/sessions/{session_id}", response_model=SessionHistoryResponse, tags=["Sessions"]
+)
+async def get_session_history(session_id: str = SessionIdPath):
+    """
+    Return the stored history of a chat session, oldest message first.
+
+    Assistant messages carry the standalone query that was embedded, the
+    evaluator confidence and the documents used as context. Sessions expire
+    after `SESSION_TTL_DAYS`.
+    """
+    try:
+        stored = await get_session_store().load(
+            session_id, settings.session_max_stored_messages
+        )
+    except SessionStoreError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Session store unavailable: {exc}",
+        )
+    if stored is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session not found: {session_id}",
+        )
+    return SessionHistoryResponse(
+        session_id=session_id,
+        message_count=len(stored.messages),
+        summary=stored.summary,
+        summary_covers_messages=stored.summary_covers_messages,
+        created_at=stored.created_at,
+        updated_at=stored.updated_at,
+        messages=[SessionMessage(**turn.model_dump()) for turn in stored.messages],
+    )
+
+
+@user_router.delete(
+    "/sessions/{session_id}", response_model=SessionDeleteResponse, tags=["Sessions"]
+)
+async def delete_session(session_id: str = SessionIdPath):
+    """Forget a chat session. Idempotent: an unknown session yields 0 deleted rows."""
+    try:
+        deleted = await get_session_store().delete(session_id)
+    except SessionStoreError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Session store unavailable: {exc}",
+        )
+    return SessionDeleteResponse(
+        session_id=session_id, status="deleted", deleted_messages=deleted
+    )
+
+
+@admin_router.post("/scrappings", response_model=ScrapeResponse, tags=["Documents"])
 async def scrape_webpage(
     background_tasks: BackgroundTasks,
     request: ScrapeRequest,
@@ -261,7 +377,7 @@ async def scrape_webpage(
     )
 
 
-@app.get("/tasks/{task_id}", tags=["Tasks"])
+@user_router.get("/tasks/{task_id}", tags=["Tasks"])
 async def get_task_status_endpoint(task_id: str):
     """
     Get the status of a background task.
@@ -297,7 +413,7 @@ async def get_task_status_endpoint(task_id: str):
     )
 
 
-@app.post("/uploads", response_model=UploadResponse, tags=["Uploads"])
+@admin_router.post("/uploads", response_model=UploadResponse, tags=["Uploads"])
 async def upload_document_endpoint(
     upload_request=Depends(upload_dependencies),
 ):
@@ -325,3 +441,7 @@ async def upload_document_endpoint(
             status_code=500,
             detail=f"Error processing upload: {str(e)}",
         )
+
+
+app.include_router(user_router)
+app.include_router(admin_router)

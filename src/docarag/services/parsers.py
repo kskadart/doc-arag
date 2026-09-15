@@ -17,6 +17,8 @@ MD_HEADERS_TO_SPLIT_ON = [("#", "h1"), ("##", "h2"), ("###", "h3")]
 MD_BREADCRUMB_SEPARATOR = " > "
 # Floor for the sub-split budget that is left after the breadcrumb prefix
 MD_MIN_CHUNK_SIZE = 100
+MD_SECTION_JOINER = "\n\n"
+MD_SECTION_JOINER_LENGTH = len(MD_SECTION_JOINER)
 
 
 def parse_pdf(file_content: bytes) -> list[Document]:
@@ -128,15 +130,69 @@ def _breadcrumb(metadata: dict[str, str]) -> str:
     return MD_BREADCRUMB_SEPARATOR.join(titles)
 
 
+def _common_breadcrumb(sections: list[Document]) -> str:
+    """
+    Build the header trail shared by every section of a merged group.
+
+    Args:
+        sections: Header-split sections that are packed into one chunk
+
+    Returns:
+        Breadcrumb of the deepest header level on which all sections agree
+    """
+    titles: list[str] = []
+    for _, key in MD_HEADERS_TO_SPLIT_ON:
+        values = {section.metadata.get(key) for section in sections}
+        if len(values) != 1 or not next(iter(values)):
+            break
+        titles.append(str(next(iter(values))))
+    return MD_BREADCRUMB_SEPARATOR.join(titles)
+
+
+def _merge_small_sections(
+    sections: list[Document], max_size: int
+) -> list[tuple[int, list[Document]]]:
+    """
+    Pack consecutive sections into groups that fit into one chunk.
+
+    Args:
+        sections: Header-split sections in document order
+        max_size: Maximum size of a merged chunk, breadcrumb included
+
+    Returns:
+        Groups as (section number of the first member, sections) in document order
+    """
+    groups: list[tuple[int, list[Document]]] = []
+    current: list[Document] = []
+    current_number = 1
+    for number, section in enumerate(sections, start=1):
+        candidate = [*current, section]
+        merged_length = len(_common_breadcrumb(candidate)) + 2
+        merged_length += sum(len(item.page_content) for item in candidate)
+        merged_length += MD_SECTION_JOINER_LENGTH * (len(candidate) - 1)
+        if current and merged_length > max_size:
+            groups.append((current_number, current))
+            current, current_number = [section], number
+        else:
+            if not current:
+                current_number = number
+            current = candidate
+    if current:
+        groups.append((current_number, current))
+    return groups
+
+
 def parse_markdown(
     file_content: bytes, chunk_size: int, chunk_overlap: int
 ) -> list[Document]:
     """
     Extract text from markdown file split by headers into numbered sections.
 
-    Frontmatter is dropped, sections are split on h1-h3 and oversized ones are
-    split further; every chunk keeps the breadcrumb of its section so that a
-    continuation chunk still carries the context of its headers.
+    Frontmatter is dropped, sections are split on h1-h3, consecutive small
+    sections are packed together up to settings.md_merge_max_size (see
+    settings.md_merge_sections) and oversized ones are split further; every chunk keeps the breadcrumb of
+    its section(s) so that a continuation chunk still carries the context of
+    its headers.
 
     Args:
         file_content: Markdown file content as bytes
@@ -162,20 +218,26 @@ def parse_markdown(
     if not sections:
         sections = [Document(page_content=body)]
 
+    if settings.md_merge_sections:
+        groups = _merge_small_sections(sections, settings.md_merge_max_size)
+    else:
+        groups = [(number, [section]) for number, section in enumerate(sections, 1)]
+
     documents: list[Document] = []
-    for section_number, section in enumerate(sections, start=1):
-        breadcrumb = _breadcrumb(section.metadata)
+    for section_number, group in groups:
+        breadcrumb = _common_breadcrumb(group)
         prefix = f"{breadcrumb}\n\n" if breadcrumb else ""
         budget = max(chunk_size - len(prefix), MD_MIN_CHUNK_SIZE)
+        body_text = MD_SECTION_JOINER.join(item.page_content for item in group)
 
-        if len(section.page_content) <= budget:
-            pieces = [section.page_content]
+        if len(body_text) <= budget:
+            pieces = [body_text]
         else:
             pieces = RecursiveCharacterTextSplitter(
                 chunk_size=budget,
                 chunk_overlap=chunk_overlap,
                 length_function=len,
-            ).split_text(section.page_content)
+            ).split_text(body_text)
 
         for piece in pieces:
             if not piece.strip():
@@ -184,7 +246,7 @@ def parse_markdown(
             if len(content) > MD_CHUNK_WARNING_THRESHOLD:
                 logger.warning(
                     f"Markdown chunk of {len(content)} characters exceeds "
-                    f"{MD_CHUNK_WARNING_THRESHOLD}, embedding may be truncated"
+                    f"{MD_CHUNK_WARNING_THRESHOLD}, consider splitting the section by headers"
                 )
             documents.append(
                 Document(page_content=content, metadata={"page": section_number})

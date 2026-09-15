@@ -39,7 +39,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=sha,prefix=
+            type=sha,prefix=,format=long
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push Docker image
@@ -52,12 +52,20 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
   deploy:
-    name: Deploy to Yandex Cloud
+    name: Deploy to server
     runs-on: ubuntu-latest
     needs: build-and-push
     environment: production
     steps:
       - uses: actions/checkout@v4
+
+      - name: Prepare deployment directory
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: mkdir -p /opt/doc-arag
 
       - name: Copy docker-compose to server
         uses: appleboy/scp-action@v0.1.7
@@ -80,17 +88,36 @@ jobs:
             
             # Create .env file from GitHub Secrets
             cat > .env << 'EOF'
-            IMAGE_TAG=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            IMAGE_TAG=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
+            LLM_PROVIDER=${{ vars.LLM_PROVIDER || 'openai' }}
+            LLM_BASE_URL=${{ vars.LLM_BASE_URL || 'https://openrouter.ai/api/v1' }}
+            LLM_API_KEY=${{ secrets.LLM_API_KEY }}
+            LLM_MODEL=${{ vars.LLM_MODEL || 'qwen/qwen3.8-flash' }}
+            LLM_EXTRA_BODY=${{ vars.LLM_EXTRA_BODY || '{"reasoning": {"enabled": false}}' }}
             ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
-            ANTHROPIC_MODEL=${{ vars.ANTHROPIC_MODEL || 'claude-3-haiku-20240307' }}
+            ANTHROPIC_MODEL=${{ vars.ANTHROPIC_MODEL }}
             ANTHROPIC_PROXY_URL=${{ secrets.ANTHROPIC_PROXY_URL }}
             ANTHROPIC_PROXY_USER=${{ secrets.ANTHROPIC_PROXY_USER }}
             ANTHROPIC_PROXY_PASS=${{ secrets.ANTHROPIC_PROXY_PASS }}
+            EMBEDDING_BASE_URL=${{ vars.EMBEDDING_BASE_URL || 'https://openrouter.ai/api/v1' }}
+            EMBEDDING_API_KEY=${{ secrets.EMBEDDING_API_KEY }}
+            EMBEDDING_MODEL=${{ vars.EMBEDDING_MODEL || 'qwen/qwen3-embedding-8b' }}
+            EMBEDDING_EXTRA_BODY=${{ vars.EMBEDDING_EXTRA_BODY || '{"provider": {"order": ["nebius", "deepinfra"], "allow_fallbacks": false}}' }}
+            RERANKER_PROVIDER=${{ vars.RERANKER_PROVIDER || 'openai-rerank' }}
+            RERANKER_SERVICE_URL=${{ vars.RERANKER_SERVICE_URL || 'reranker-service:8352' }}
+            RERANKER_BASE_URL=${{ vars.RERANKER_BASE_URL || 'https://openrouter.ai/api/v1' }}
+            RERANKER_API_KEY=${{ secrets.RERANKER_API_KEY }}
+            RERANKER_MODEL=${{ vars.RERANKER_MODEL || 'qwen/qwen3-reranker-8b' }}
+            RERANK_TOP_K=${{ vars.RERANK_TOP_K || '8' }}
             MINIO_ROOT_USER=${{ secrets.MINIO_ROOT_USER }}
             MINIO_ROOT_PASSWORD=${{ secrets.MINIO_ROOT_PASSWORD }}
             MINIO_BUCKET=${{ vars.MINIO_BUCKET || 'default-documents' }}
-            EMBEDDING_SERVICE_URL=${{ vars.EMBEDDING_SERVICE_URL || 'embedding-service:8351' }}
-            RERANKER_MODEL_NAME=${{ vars.RERANKER_MODEL_NAME || 'cross-encoder/ms-marco-MiniLM-L-6-v2' }}
+            # Identity comes from the doc-arag-client edge (Caddy + Authelia); the
+            # same AUTH_PROXY_SECRET must be configured there
+            AUTH_TRUSTED_HEADERS=${{ vars.AUTH_TRUSTED_HEADERS || 'true' }}
+            AUTH_PROXY_SECRET=${{ secrets.AUTH_PROXY_SECRET }}
+            AUTH_ADMIN_GROUP=${{ vars.AUTH_ADMIN_GROUP || 'admins' }}
             EOF
             
             chmod 600 .env

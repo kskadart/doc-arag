@@ -1,16 +1,43 @@
-from pydantic import SecretStr
+from typing import Any, Literal
+
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Application settings loaded from environment variables."""
+    """Application settings loaded from environment variables.
+
+    Model providers are selected per component (LLM, embeddings, reranker)
+    through environment variables only; no code change is needed to switch
+    between OpenRouter, a local OpenAI-compatible server or the gRPC reranker.
+    """
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", case_sensitive=False, extra="forbid"
     )
 
-    anthropic_api_key: str
-    anthropic_model: str
+    # --- OpenRouter -----------------------------------------------------------
+    # One key for every component whose base_url points at OpenRouter; a
+    # component-specific *_API_KEY still wins when set
+    openrouter_api_key: SecretStr = SecretStr("")
+
+    # --- LLM (chat) ---------------------------------------------------------
+    llm_provider: Literal["openai", "anthropic"] = "openai"
+    # Any OpenAI-compatible chat endpoint: OpenRouter, llama.cpp, vLLM, Ollama
+    llm_base_url: str | None = "https://openrouter.ai/api/v1"
+    llm_api_key: SecretStr = SecretStr("EMPTY")
+    llm_model: str = "qwen/qwen3.8-flash"
+    llm_temperature: float = 0.7
+    llm_timeout: int = 120
+    llm_max_retries: int = 2
+    # Extra JSON merged into the request body, e.g. {"reasoning": {"enabled": false}}
+    llm_extra_body: dict[str, Any] | None = None
+    # Extra HTTP headers, e.g. {"HTTP-Referer": "...", "X-Title": "doc-arag"}
+    llm_default_headers: dict[str, str] | None = None
+
+    # --- LLM: legacy Anthropic branch, used only when llm_provider=anthropic --
+    anthropic_api_key: str | None = None
+    anthropic_model: str | None = None
     anthropic_proxy_url: str | None = None
     anthropic_proxy_user: str | None = None
     anthropic_proxy_pass: str | None = None
@@ -29,6 +56,48 @@ class Settings(BaseSettings):
 
         return self.anthropic_proxy_url
 
+    # --- Embeddings (OpenAI-compatible /embeddings) -------------------------
+    # OpenRouter (qwen/qwen3-embedding-8b, 4096 dims) or a local llama.cpp /
+    # Ollama server; see compose.models.yml for the local stack
+    embedding_base_url: str = "https://openrouter.ai/api/v1"
+    embedding_api_key: SecretStr = SecretStr("EMPTY")
+    embedding_model: str = "qwen/qwen3-embedding-8b"
+    # Sent only when set; some models accept a reduced output dimension
+    embedding_dimensions: int | None = None
+    # Texts per HTTP request (DashScope caps this at 10, local servers accept more)
+    embedding_batch_size: int = 16
+    embedding_timeout: int = 120
+    embedding_max_retries: int = 3
+    # Extra JSON merged into the /embeddings body, e.g. OpenRouter provider routing:
+    # {"provider": {"order": ["nebius", "deepinfra"], "allow_fallbacks": false}}
+    embedding_extra_body: dict[str, Any] | None = None
+
+    # --- Reranker -------------------------------------------------------------
+    reranker_provider: Literal["openai-rerank", "grpc", "none"] = "openai-rerank"
+    # openai-rerank: POST {base_url}/rerank with {model, query, documents, top_n}
+    # -> results[{index, relevance_score}] (OpenRouter, llama.cpp, vLLM, Jina, Cohere)
+    reranker_base_url: str | None = "https://openrouter.ai/api/v1"
+    reranker_api_key: SecretStr = SecretStr("EMPTY")
+    reranker_model: str = "qwen/qwen3-reranker-8b"
+    # grpc: the rag-services reranker (compose service name must be reranker-service)
+    reranker_service_url: str = "reranker-service:8352"
+    reranker_timeout: int = 30
+    reranker_max_retries: int = 1
+
+    # --- Auth (see src/docarag/auth.py) ----------------------------------------
+    # The API never checks passwords. When auth_trusted_headers is on, the
+    # identity comes from Remote-User / Remote-Groups set by the edge proxy
+    # (Caddy forward_auth -> Authelia) and every request must also carry
+    # X-Auth-Proxy-Secret = auth_proxy_secret: containers on the shared docker
+    # network can reach the API directly, so the headers alone prove nothing.
+    # Off (default): every caller is an anonymous administrator (local, tests).
+    auth_trusted_headers: bool = False
+    auth_proxy_secret: SecretStr = SecretStr("")
+    # Group whose members may upload, embed, list and delete documents; the
+    # Authelia rules in doc-arag-client are templated from the same variable
+    auth_admin_group: str = "admins"
+
+    # --- Storage --------------------------------------------------------------
     minio_endpoint: str
     minio_access_key: SecretStr
     minio_secret_key: SecretStr
@@ -37,34 +106,120 @@ class Settings(BaseSettings):
 
     weaviate_host: str = "weaviate"
     weaviate_port: int = 8080
-    weaviate_collection: str = "Documents"
+    weaviate_insert_batch_size: int = 100
+    # Compare the live embedding dimension with stored vectors at startup
+    startup_verify_embedding_dimension: bool = True
 
+    # --- Chunking -------------------------------------------------------------
     chunk_size: int = 512
     chunk_overlap: int = 64
-    # Markdown is split by headers, so a section needs a larger budget than a
-    # PDF page slice; 900 characters stay under the 512-token embedding limit
-    md_chunk_size: int = 900
-    md_chunk_overlap: int = 100
+    # Markdown is split by headers first; a section is kept whole up to this
+    # many characters (API embedders accept thousands of tokens, so the old
+    # 512-token ceiling no longer applies)
+    md_chunk_size: int = 1800
+    md_chunk_overlap: int = 200
+    # Consecutive small header sections are packed into one chunk up to
+    # md_chunk_size, so a file of many tiny sections (e.g. "Stage 1..11")
+    # keeps neighbouring steps together instead of scattering them
+    md_merge_sections: bool = True
+    # Ceiling for a merged chunk: smaller than md_chunk_size so that a merged
+    # chunk stays focused (2-3 short steps), while a single long section may
+    # still occupy the full md_chunk_size budget
+    md_merge_max_size: int = 1000
     max_file_size_mb: int = 50
 
+    # --- Retrieval / agent ------------------------------------------------------
     initial_retrieval_k: int = 20
+    # Retrieve with the original query as well as the rephrased one and union
+    # the candidates before reranking: the rephrase can drift away from a
+    # second document that the operator's own wording still reaches
+    retrieval_use_original_query: bool = True
     rerank_top_k: int = 5
-
-    api_host: str = "0.0.0.0"
-    api_port: int = 8103
-
-    embedding_service_url: str = "embedding-service:8351"
-    embedding_service_timeout: int = 300  # Increased to 5 minutes for large batches
-    embedding_use_async: bool = True
-    embedding_max_length: int = 512
-    embedding_pooling_strategy: str = "mean"
-    embedding_normalize: bool = True
-    embedding_batch_size: int = 32  # Process in smaller batches
-
     agent_confidence_threshold: float = 0.7
-    anthropic_temperature: float = 0.7
-    reranker_service_url: str = "reranker-service:8352"
-    reranker_timeout: int = 30
+
+    # --- Sessions / conversational memory ---------------------------------------
+    # Where chat history lives: the ChatMessages collection in Weaviate (survives
+    # restarts, shared between workers) or process memory (tests, quick runs)
+    session_store: Literal["weaviate", "memory"] = "weaviate"
+    session_ttl_days: int = 7
+    # Verbatim tail handed to the agent (messages, not exchanges)
+    session_history_messages: int = 6
+    # Older turns are folded into a rolling LLM summary once a session is longer
+    session_summary_after_messages: int = 12
+    # Per-message cap when building prompts; stored content is never truncated
+    session_message_max_chars: int = 1200
+    # Read cap per session, newest first
+    session_max_stored_messages: int = 200
+    # Periodic TTL sweep; 0 disables it (the startup sweep still runs)
+    session_cleanup_interval_minutes: int = 60
+
+    @field_validator(
+        "llm_extra_body", "llm_default_headers", "embedding_extra_body", mode="before"
+    )
+    @classmethod
+    def _empty_json_is_none(cls, value: Any) -> Any:
+        """Treat an empty env value as unset: compose passes `${VAR:-}` as ""."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @staticmethod
+    def _is_openrouter(base_url: str | None) -> bool:
+        return bool(base_url) and str(base_url).startswith("https://openrouter.ai")
+
+    @model_validator(mode="after")
+    def _apply_openrouter_key(self) -> "Settings":
+        """Fill component keys from OPENROUTER_API_KEY where the base_url is OpenRouter."""
+        shared = self.openrouter_api_key.get_secret_value()
+        if not shared:
+            return self
+        for key_field, url in (
+            ("llm_api_key", self.llm_base_url),
+            ("embedding_api_key", self.embedding_base_url),
+            ("reranker_api_key", self.reranker_base_url),
+        ):
+            current: SecretStr = getattr(self, key_field)
+            if self._is_openrouter(url) and current.get_secret_value() in ("", "EMPTY"):
+                setattr(self, key_field, SecretStr(shared))
+        return self
+
+    @model_validator(mode="after")
+    def _validate_providers(self) -> "Settings":
+        if self.llm_provider == "anthropic" and not (
+            self.anthropic_api_key and self.anthropic_model
+        ):
+            raise ValueError(
+                "llm_provider=anthropic requires ANTHROPIC_API_KEY and ANTHROPIC_MODEL"
+            )
+        if self.llm_provider == "openai" and not self.llm_model:
+            raise ValueError("llm_provider=openai requires LLM_MODEL")
+        if self.reranker_provider == "openai-rerank" and not self.reranker_base_url:
+            raise ValueError(
+                "reranker_provider=openai-rerank requires RERANKER_BASE_URL"
+            )
+        if self.auth_trusted_headers and not self.auth_proxy_secret.get_secret_value():
+            raise ValueError("AUTH_TRUSTED_HEADERS=true requires AUTH_PROXY_SECRET")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_sessions(self) -> "Settings":
+        if self.session_summary_after_messages <= self.session_history_messages:
+            raise ValueError(
+                "SESSION_SUMMARY_AFTER_MESSAGES must be greater than "
+                "SESSION_HISTORY_MESSAGES, otherwise the summary would be rebuilt "
+                "on every turn"
+            )
+        for name in (
+            "session_ttl_days",
+            "session_history_messages",
+            "session_message_max_chars",
+            "session_max_stored_messages",
+        ):
+            if getattr(self, name) < 1:
+                raise ValueError(f"{name.upper()} must be at least 1")
+        if self.session_cleanup_interval_minutes < 0:
+            raise ValueError("SESSION_CLEANUP_INTERVAL_MINUTES must be >= 0")
+        return self
 
 
 # Required fields are supplied by the environment, not by the call site
