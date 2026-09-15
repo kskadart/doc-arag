@@ -1,6 +1,10 @@
 from pydantic import BaseModel, HttpUrl, Field, field_validator
 
-from src.docarag.consts import DEFAULT_COLLECTION_NAME
+from src.docarag.consts import (
+    DEFAULT_COLLECTION_NAME,
+    SESSION_ID_MAX_LENGTH,
+    SESSION_ID_PATTERN,
+)
 
 
 class ScrapeRequest(BaseModel):
@@ -24,6 +28,22 @@ class QueryRequest(BaseModel):
     max_iterations: int = Field(
         default=2, ge=1, le=5, description="Maximum agent iterations"
     )
+    session_id: str | None = Field(
+        default=None,
+        max_length=SESSION_ID_MAX_LENGTH,
+        pattern=SESSION_ID_PATTERN,
+        description=(
+            "Chat identifier; earlier turns of the same session are used to "
+            "resolve follow-up questions. Omit for a stateless query."
+        ),
+    )
+
+    @field_validator("session_id", mode="before")
+    @classmethod
+    def _empty_session_means_stateless(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @field_validator("domain", mode="after")
     @classmethod

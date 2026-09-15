@@ -11,3 +11,7 @@ class EmbeddingError(DocARAGError):
 
 class RerankerError(DocARAGError):
     """The reranker failed, timed out or returned an unusable payload."""
+
+
+class SessionStoreError(DocARAGError):
+    """The conversation store failed to read or write a session."""

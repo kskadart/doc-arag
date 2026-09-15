@@ -220,3 +220,226 @@ def test_build_source_chunk_prefers_rerank_score_and_truncates():
 
     plain = build_source_chunk({"similarity_score": 0.4, "content": "short"})
     assert plain.score == 0.4 and plain.snippet == "short" and plain.page == 0
+
+
+# --- conversational memory ------------------------------------------------------
+
+
+def _llm_returning(text: str) -> Mock:
+    llm = Mock()
+    llm.ainvoke = AsyncMock(return_value=Mock(text=text))
+    return llm
+
+
+def _history() -> list:
+    from datetime import UTC, datetime
+
+    from src.docarag.models.sessions import ChatTurn
+
+    now = datetime(2026, 9, 14, tzinfo=UTC)
+    return [
+        ChatTurn(role="user", content="Что такое ELAN?", created_at=now, turn_index=0),
+        ChatTurn(
+            role="assistant",
+            content="ELAN — это ...",
+            created_at=now,
+            turn_index=1,
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_rephrase_query_node_condenses_with_history_and_summary():
+    """Test that the condense prompt carries the transcript, summary and latest message."""
+    from src.docarag.services.agent import rephrase_query_node
+
+    state = AgentState(
+        query="А как его подключить?",
+        history=_history(),
+        history_summary="Ранее обсуждали тарифы.",
+    )
+    llm = _llm_returning("  Подключение ELAN  ")
+
+    with patch("src.docarag.services.agent.get_chat_model", return_value=llm):
+        result = await rephrase_query_node(state)
+
+    assert result["rephrased_query"] == "Подключение ELAN"
+    assert result["previous_queries"] == ["Подключение ELAN"]
+    system, human = llm.ainvoke.call_args.args[0]
+    assert "standalone search query" in system.content
+    assert "Operator: Что такое ELAN?" in human.content
+    assert "Assistant: ELAN — это ..." in human.content
+    assert "Ранее обсуждали тарифы." in human.content
+    assert human.content.rstrip().endswith(
+        "А как его подключить?\n\nStandalone search query:"
+    )
+
+
+@pytest.mark.asyncio
+async def test_rephrase_query_node_retry_asks_for_a_different_formulation():
+    """Regression: a second iteration must not repeat the first standalone query."""
+    from src.docarag.services.agent import rephrase_query_node
+
+    state = AgentState(query="q", iterations=1, previous_queries=["first attempt"])
+    llm = _llm_returning("second attempt")
+
+    with patch("src.docarag.services.agent.get_chat_model", return_value=llm):
+        result = await rephrase_query_node(state)
+
+    human = llm.ainvoke.call_args.args[0][1]
+    assert "1. first attempt" in human.content
+    assert "DIFFERENT formulation" in human.content
+    assert result["previous_queries"] == ["first attempt", "second attempt"]
+
+
+@pytest.mark.asyncio
+async def test_rephrase_query_node_without_history_says_none():
+    """Test that a stateless query still goes through the condense prompt cleanly."""
+    from src.docarag.services.agent import rephrase_query_node
+
+    llm = _llm_returning("")
+
+    with patch("src.docarag.services.agent.get_chat_model", return_value=llm):
+        result = await rephrase_query_node(AgentState(query="plain question"))
+
+    human = llm.ainvoke.call_args.args[0][1]
+    assert "Recent conversation:\n(none)" in human.content
+    assert result["rephrased_query"] == "plain question"  # empty reply falls back
+
+
+@pytest.mark.asyncio
+async def test_generate_answer_node_sends_history_as_messages(monkeypatch):
+    """Test the message layout: system (rules + summary), history, context + question."""
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+    from src.docarag.services.agent import generate_answer_node
+
+    monkeypatch.setattr(settings, "session_message_max_chars", 8)
+    history = _history()
+    history[1].content = "x" * 50
+    state = AgentState(
+        query="А как его подключить?",
+        history=history,
+        history_summary="Сводка.",
+        retrieved_docs=[{"document_name": "a.md", "page": 1, "content": "chunk"}],
+    )
+    llm = _llm_returning("answer")
+
+    with patch("src.docarag.services.agent.get_chat_model", return_value=llm):
+        result = await generate_answer_node(state)
+
+    assert result == {"answer": "answer"}
+    messages = llm.ainvoke.call_args.args[0]
+    assert [type(m) for m in messages] == [
+        SystemMessage,
+        HumanMessage,
+        AIMessage,
+        HumanMessage,
+    ]
+    assert "Сводка." in messages[0].content
+    assert "Не пиши вступлений" in messages[0].content
+    assert messages[2].content == "x" * 8 + "…"
+    assert "[Фрагмент 1, источник a.md, раздел 1]\nchunk" in messages[3].content
+    assert (
+        messages[3]
+        .content.rstrip()
+        .endswith("Вопрос оператора: А как его подключить?\n\nОтвет:")
+    )
+
+
+@pytest.mark.asyncio
+async def test_evaluate_answer_node_scores_the_standalone_query():
+    """Test that the evaluator sees the resolved question, not the bare follow-up."""
+    from src.docarag.services.agent import evaluate_answer_node
+
+    state = AgentState(
+        query="а для юрлиц?",
+        rephrased_query="условия подключения ELAN для юридических лиц",
+        answer="...",
+        retrieved_docs=[{"content": "c"}],
+    )
+    llm = _llm_returning("0.9")
+
+    with patch("src.docarag.services.agent.get_chat_model", return_value=llm):
+        result = await evaluate_answer_node(state)
+
+    prompt = llm.ainvoke.call_args.args[0]
+    assert "условия подключения ELAN для юридических лиц" in prompt
+    assert "а для юрлиц?" not in prompt
+    assert result["confidence"] == 0.9
+
+
+@pytest.mark.asyncio
+async def test_query_documents_with_session_loads_memory_and_records_turn():
+    """Test the wiring around the graph: memory in, both turns out, id echoed."""
+    from src.docarag.models.requests import QueryRequest
+    from src.docarag.models.sessions import SessionMemory
+    from src.docarag.services.agent import query_documents
+
+    memory = SessionMemory(
+        session_id="chat-1",
+        recent=_history(),
+        summary="Сводка.",
+        total_messages=2,
+        available=True,
+    )
+    graph = Mock()
+    graph.ainvoke = AsyncMock(
+        return_value={
+            "answer": "ok",
+            "rephrased_query": "Подключение ELAN",
+            "confidence": 0.8,
+            "iterations": 1,
+            "retrieved_docs": [
+                {"document_name": "a.md", "domain": "elan", "content": "c"}
+            ],
+        }
+    )
+    record = AsyncMock(return_value=True)
+    schedule = Mock()
+
+    with (
+        patch("src.docarag.services.agent.load_memory", AsyncMock(return_value=memory)),
+        patch("src.docarag.services.agent.build_agent_graph", return_value=graph),
+        patch("src.docarag.services.agent.record_turn", record),
+        patch("src.docarag.services.agent.schedule_summary_refresh", schedule),
+    ):
+        response = await query_documents(
+            QueryRequest(query="А как его подключить?", session_id="chat-1")
+        )
+
+    initial_state = graph.ainvoke.call_args.args[0]
+    assert initial_state.session_id == "chat-1"
+    assert initial_state.history == memory.recent
+    assert initial_state.history_summary == "Сводка."
+    assert response.session_id == "chat-1"
+    assert response.rephrased_query == "Подключение ELAN"
+    record.assert_awaited_once()
+    assert record.call_args.args[:3] == ("chat-1", memory, "А как его подключить?")
+    assert record.call_args.args[3] is response
+    schedule.assert_called_once_with("chat-1", memory)
+
+
+@pytest.mark.asyncio
+async def test_query_documents_without_session_is_stateless():
+    """Test that scripts without a session id never touch the session store."""
+    from src.docarag.models.requests import QueryRequest
+    from src.docarag.services.agent import query_documents
+
+    graph = Mock()
+    graph.ainvoke = AsyncMock(
+        return_value={"answer": "ok", "confidence": 0.5, "iterations": 1}
+    )
+    schedule = Mock()
+
+    with (
+        patch("src.docarag.services.agent.build_agent_graph", return_value=graph),
+        patch("src.docarag.services.sessions.get_session_store") as get_store,
+        patch("src.docarag.services.agent.schedule_summary_refresh", schedule),
+    ):
+        response = await query_documents(QueryRequest(query="q"))
+
+    get_store.assert_not_called()
+    schedule.assert_not_called()
+    assert response.session_id is None
+    assert graph.ainvoke.call_args.args[0].history == []

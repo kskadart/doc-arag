@@ -120,3 +120,51 @@ def test_component_key_wins_over_openrouter_key(monkeypatch):
         **_MINIO,
     )
     assert s.llm_api_key.get_secret_value() == "sk-mine"
+
+
+def test_session_defaults(monkeypatch):
+    for key in (
+        "SESSION_STORE",
+        "SESSION_TTL_DAYS",
+        "SESSION_HISTORY_MESSAGES",
+        "SESSION_SUMMARY_AFTER_MESSAGES",
+        "SESSION_MESSAGE_MAX_CHARS",
+        "SESSION_MAX_STORED_MESSAGES",
+        "SESSION_CLEANUP_INTERVAL_MINUTES",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    s = Settings(_env_file=None, **_MINIO)
+
+    assert s.session_store == "weaviate"
+    assert s.session_ttl_days == 7
+    assert s.session_history_messages == 6
+    assert s.session_summary_after_messages == 12
+    assert s.session_message_max_chars == 1200
+    assert s.session_max_stored_messages == 200
+    assert s.session_cleanup_interval_minutes == 60
+
+
+def test_session_summary_threshold_must_exceed_history_window():
+    with pytest.raises(ValidationError, match="SESSION_SUMMARY_AFTER_MESSAGES"):
+        Settings(
+            _env_file=None,
+            session_history_messages=6,
+            session_summary_after_messages=4,
+            **_MINIO,
+        )
+
+
+def test_session_store_accepts_only_known_backends():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, session_store="redis", **_MINIO)
+
+
+def test_unknown_session_key_is_rejected(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "MINIO_ENDPOINT=x\nMINIO_ACCESS_KEY=k\nMINIO_SECRET_KEY=s\nMINIO_BUCKET=b\nSESSION_FOO=1\n"
+    )
+
+    with pytest.raises(ValidationError, match="extra"):
+        Settings(_env_file=env_file)

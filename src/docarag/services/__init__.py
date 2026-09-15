@@ -1,3 +1,8 @@
+from src.docarag.services.sessions import (
+    create_session_collection,
+    run_session_cleanup_loop,
+    sweep_expired_sessions,
+)
 from src.docarag.services.uploader import process_upload
 from src.docarag.services.vector_db import (
     create_default_collection,
@@ -10,6 +15,9 @@ from src.docarag.services.vector_db import (
 
 
 __all__ = [
+    "create_session_collection",
+    "run_session_cleanup_loop",
+    "sweep_expired_sessions",
     "process_upload",
     "create_default_collection",
     "delete_collection",
