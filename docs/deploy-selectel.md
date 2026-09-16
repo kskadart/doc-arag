@@ -41,6 +41,7 @@ doc-arag:
 | `AUTH_TRUSTED_HEADERS` | var, необязательно | `true` (прод за Caddy + Authelia); `false` — только если осознанно запускаем без авторизации |
 | `LLM_EXTRA_BODY` | var, необязательно | по умолчанию `{"reasoning": {"enabled": false}}` |
 | `RERANK_TOP_K` | var, необязательно | по умолчанию `8` |
+| `OUTBOUND_HTTPS_PROXY` | secret | **обязателен на Selectel**: OpenRouter отдаёт 403 всем российским IP. URL прокси за рубежом, например `http://user:pass@host:3128`; api ходит через него к OpenRouter, Weaviate и MinIO — напрямую (`NO_PROXY`) |
 
 doc-arag-client: `SERVER_HOST`, `SERVER_USER`, `SSH_PRIVATE_KEY` (те же), vars `DOMAIN=oreo.kskada.com`, `BACKEND_API_HOST=api`, `BACKEND_API_PORT=8103`, `API_PATH=/api`.
 Авторизация (Authelia): var `AUTH_MODE=on`, secrets `AUTH_PROXY_SECRET` (как у бэкенда), `AUTHELIA_SESSION_SECRET`, `AUTHELIA_STORAGE_ENCRYPTION_KEY`, `AUTHELIA_JWT_SECRET` (каждый `openssl rand -hex 32`), `AUTHELIA_USERS_YML_B64` (base64 от `authelia/users.yml`). Без `AUTH_MODE=on` сайт открыт всем: вопросы за счёт OpenRouter, загрузка и удаление документов.

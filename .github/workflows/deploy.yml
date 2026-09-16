@@ -110,6 +110,8 @@ jobs:
             RERANKER_API_KEY=${{ secrets.RERANKER_API_KEY }}
             RERANKER_MODEL=${{ vars.RERANKER_MODEL || 'qwen/qwen3-reranker-8b' }}
             RERANK_TOP_K=${{ vars.RERANK_TOP_K || '8' }}
+            # Proxy for OpenRouter calls, e.g. http://user:pass@proxy.example:3128 (empty = direct)
+            OUTBOUND_HTTPS_PROXY=${{ secrets.OUTBOUND_HTTPS_PROXY }}
             MINIO_ROOT_USER=${{ secrets.MINIO_ROOT_USER }}
             MINIO_ROOT_PASSWORD=${{ secrets.MINIO_ROOT_PASSWORD }}
             MINIO_BUCKET=${{ vars.MINIO_BUCKET || 'default-documents' }}
