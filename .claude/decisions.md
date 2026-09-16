@@ -31,3 +31,7 @@
 22. **Провайдер эмбеддингов на OpenRouter закреплён** (`EMBEDDING_EXTRA_BODY={"provider": {"order": ["nebius", "deepinfra"], "allow_fallbacks": false}}`): без него часть запросов уходила на провайдера с задержкой до 25 с, а SiliconFlow отдаёт fp8 — векторы индекса и запросов должны приходить с одной модели.
 23. **Создание коллекций терпит гонку процессов**: продовый образ запускает `uvicorn --workers 2`, оба процесса на пустом Weaviate создают `DefaultDocuments`/`ChatMessages`, проигравший получал 422 «already exists» и ронял api. 422 с «already exists» теперь = успех.
 24. **Сквозная проверка — локальная копия прода** (продовый образ и compose, Authelia на `oreo.test`), браузер через Playwright; до деплоя повторять её после изменений в auth, Caddy или клиенте.
+
+## 2026-09-16
+25. **OpenRouter недоступен с российских IP** — Cloudflare отдаёт 403 «Access denied by security policy» даже на публичный список моделей. Прод на Selectel ходит к моделям через внешний прокси: секрет `OUTBOUND_HTTPS_PROXY`, `NO_PROXY` оставляет Weaviate и MinIO напрямую. Кода это не потребовало: httpx, OpenAI SDK и gRPC читают переменные окружения. Альтернативы (сервер вне РФ, Yandex AI Studio, свой GPU) пользователь отклонил.
+26. **Authelia не перечитывает `users.yml`** при перезаписи bind-mounted файла, хотя пишет «Watching file for changes». Пароли применяются только после перезапуска контейнера, поэтому деплой клиента перезапускает Authelia, если контрольная сумма файла изменилась (client PR #22).
